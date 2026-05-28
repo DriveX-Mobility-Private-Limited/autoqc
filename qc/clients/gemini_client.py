@@ -35,9 +35,8 @@ class GeminiClient:
         self,
         prompt: str,
         image_urls: list[str],
-        expected_make_model: str | None = None,
     ) -> list[dict]:
-        body = self._build_body(prompt, image_urls, expected_make_model)
+        body = self._build_body(prompt, image_urls)
         try:
             response = requests.post(
                 self._url(), json=body, timeout=self.timeout,
@@ -52,16 +51,7 @@ class GeminiClient:
         self,
         prompt: str,
         image_urls: list[str],
-        expected_make_model: str | None = None,
     ) -> dict:
-        if expected_make_model:
-            prompt = (
-                f"{prompt}\n\n"
-                f"Expected Vehicle Make/Model: {expected_make_model}\n"
-                "Please verify if the visible vehicle matches "
-                "this expected make/model."
-            )
-
         parts = [{"text": prompt}]
         for url in image_urls:
             parts.append({

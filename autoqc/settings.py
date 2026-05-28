@@ -49,10 +49,6 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 
-# Galaxy integration
-GALAXY_INTERNAL_API_URL = env.str("GALAXY_INTERNAL_API_URL", default="")
-GALAXY_INTERNAL_API_KEY = env.str("GALAXY_INTERNAL_API_KEY", default="")
-
 # Gemini
 GOOGLE_GEMINI_API_KEY = env.str("GOOGLE_GEMINI_API_KEY", default="")
 GEMINI_BATCH_SIZE = env.int("GEMINI_BATCH_SIZE", default=5)
@@ -62,9 +58,6 @@ GEMINI_MAX_WORKERS = env.int("GEMINI_MAX_WORKERS", default=3)
 LANGFUSE_HOST = env.str("LANGFUSE_HOST", default="")
 LANGFUSE_PUBLIC_KEY = env.str("LANGFUSE_PUBLIC_KEY", default="")
 LANGFUSE_SECRET_KEY = env.str("LANGFUSE_SECRET_KEY", default="")
-
-# AutoQC webhook
-AUTOQC_WEBHOOK_SECRET = env.str("AUTOQC_WEBHOOK_SECRET", default="")
 
 # Internationalization
 TIME_ZONE = "Asia/Kolkata"
