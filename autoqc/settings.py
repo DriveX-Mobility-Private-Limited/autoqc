@@ -51,8 +51,6 @@ CELERY_RESULT_SERIALIZER = "json"
 
 # Gemini
 GOOGLE_GEMINI_API_KEY = env.str("GOOGLE_GEMINI_API_KEY", default="")
-GEMINI_BATCH_SIZE = env.int("GEMINI_BATCH_SIZE", default=5)
-GEMINI_MAX_WORKERS = env.int("GEMINI_MAX_WORKERS", default=3)
 
 # Langfuse
 LANGFUSE_HOST = env.str("LANGFUSE_HOST", default="")

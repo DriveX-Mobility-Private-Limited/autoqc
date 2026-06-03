@@ -1,5 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 from django.conf import settings
 from langfuse import Langfuse
 
@@ -34,18 +32,18 @@ def _get_prompt() -> str:
         return DEFAULT_PROMPT
 
 
-def _run_batch(
-    batch_urls: list[str],
-    batch_offset: int,
+def _run_single_image(
+    image_url: str,
+    image_index: int,
     prompt: str,
     model_name: str,
 ) -> list[dict]:
     results = GeminiClient(model_name=model_name).generate(
         prompt=prompt,
-        image_urls=batch_urls,
+        image_urls=[image_url],
     )
     for result in results:
-        result["image_index"] += batch_offset
+        result["image_index"] = image_index
     return results
 
 
@@ -53,45 +51,19 @@ def run_gemini(
     image_urls: list[str],
     model_name: str,
 ) -> list[dict]:
-    """Run Gemini license-plate extraction; batches if image count exceeds limit."""
+    """Run Gemini license-plate extraction one image/angle at a time."""
     if not image_urls:
         return []
 
     prompt = _get_prompt()
-    batch_size = settings.GEMINI_BATCH_SIZE
-
-    if len(image_urls) <= batch_size:
-        try:
-            return _run_batch(image_urls, 0, prompt, model_name)
-        except Exception:
-            logging.exception("Gemini invocation failed")
-            return []
-
-    batches = [
-        (image_urls[i : i + batch_size], i)
-        for i in range(0, len(image_urls), batch_size)
-    ]
-    max_workers = min(settings.GEMINI_MAX_WORKERS, len(batches))
-    logging.info(
-        f"Processing {len(image_urls)} images in {len(batches)} "
-        f"batches with {max_workers} threads",
-    )
-
     all_results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                _run_batch, urls, offset, prompt, model_name,
-            ): offset
-            for urls, offset in batches
-        }
-        for future in as_completed(futures):
-            try:
-                all_results.extend(future.result())
-            except Exception:
-                logging.exception(
-                    f"Gemini batch failed (offset={futures[future]})",
-                )
-
-    all_results.sort(key=lambda r: r.get("image_index", 0))
+    for index, image_url in enumerate(image_urls):
+        try:
+            all_results.extend(
+                _run_single_image(image_url, index, prompt, model_name),
+            )
+        except Exception:
+            logging.exception(
+                f"Gemini invocation failed for image_index={index}",
+            )
     return all_results

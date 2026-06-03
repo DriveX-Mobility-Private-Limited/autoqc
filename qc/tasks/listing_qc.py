@@ -3,6 +3,9 @@ from celery import shared_task
 from autoqc.celery_app import app as celery_app
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
 from qc.constants.enums import C2CQCSource
+from qc.services.vehicle_analysis_redis_service import (
+    VehicleAnalysisRedisService,
+)
 from qc.tasks.helpers import run_gemini
 from logger import get_logger
 
@@ -44,3 +47,75 @@ def process_listing_qc(
     logging.info(
         f"Published autoqc result back to galaxy for {c2c_inventory_id=}",
     )
+
+
+@shared_task(bind=True, name="autoqc.tasks.vehicle_analysis_qc")
+def vehicle_analysis_qc(
+    self,  # noqa: ANN001
+    vehicle_id: int,
+    image_path: str,
+    transaction_id: str,
+    angle: str,
+    image_url: str = "",
+) -> dict:
+    logging.info(
+        f"Starting vehicle analysis for {vehicle_id=}, "
+        f"{transaction_id=}, {angle=}",
+    )
+
+    redis_service = VehicleAnalysisRedisService()
+    resolved_image_url = image_url or image_path
+    if not resolved_image_url.startswith(("http://", "https://")):
+        result = {
+            "success": False,
+            "error": "image_url is required when image_path is not a URL",
+            "task_id": self.request.id,
+            "vehicle_id": vehicle_id,
+            "image_path": image_path,
+            "image_url": image_url,
+            "transaction_id": transaction_id,
+            "angle": angle,
+        }
+        redis_service.save_result(transaction_id, angle, result)
+        return result
+
+    ai_response = run_gemini(
+        image_urls=[resolved_image_url],
+        model_name=AUTO_QC_GEMINI_MODEL_NAME,
+    )
+
+    if not ai_response:
+        result = {
+            "success": False,
+            "error": "AI response not available",
+            "task_id": self.request.id,
+            "vehicle_id": vehicle_id,
+            "image_path": image_path,
+            "image_url": resolved_image_url,
+            "transaction_id": transaction_id,
+            "angle": angle,
+            "raw_ai_response": [],
+        }
+        redis_service.save_result(transaction_id, angle, result)
+        return result
+
+    result = {
+        "success": True,
+        "task_id": self.request.id,
+        "vehicle_id": vehicle_id,
+        "image_path": image_path,
+        "image_url": resolved_image_url,
+        "transaction_id": transaction_id,
+        "angle": angle,
+        "raw_ai_response": ai_response,
+    }
+    redis_service.save_result(
+        transaction_id,
+        angle,
+        {
+            "result": result,
+            "status": "SUCCESS",
+            "task_id": self.request.id,
+        },
+    )
+    return result
