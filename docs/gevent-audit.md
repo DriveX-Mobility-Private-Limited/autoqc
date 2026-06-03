@@ -2,7 +2,7 @@
 
 ## Decision
 
-AutoQC Celery workers use `--pool=gevent --concurrency=20` for Gemini jobs.
+AutoQC Celery workers use `--pool=gevent --concurrency=50` for Gemini jobs.
 The workload is mostly outbound HTTP I/O, so greenlet concurrency should improve
 throughput without increasing process count.
 
@@ -28,4 +28,5 @@ throughput without increasing process count.
   limits. The Gemini client must keep explicit request timeouts.
 - CPU-heavy work will block the gevent worker. Keep Celery tasks I/O-bound or
   move CPU-heavy tasks to a separate prefork worker.
-we  latency, worker memory, and task retry/failure rates.
+- With concurrency 50, watch Gemini rate limits, request latency, Redis broker
+  latency, worker memory, and task retry/failure rates.
