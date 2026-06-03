@@ -1,4 +1,3 @@
-from django.conf import settings
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -138,23 +137,6 @@ class QCImageTestView(APIView):
 
     def post(self, request: Request) -> Response:
         try:
-            if not settings.AUTOQC_API_KEY:
-                return Response(
-                    {
-                        "success": False,
-                        "error": "AutoQC API key is not configured",
-                    },
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
-                )
-            if request.headers.get("x-api-key") != settings.AUTOQC_API_KEY:
-                return Response(
-                    {
-                        "success": False,
-                        "error": "Invalid AutoQC API key",
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
             serializer = QCImageTestSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             image_url = serializer.validated_data["image_url"]
