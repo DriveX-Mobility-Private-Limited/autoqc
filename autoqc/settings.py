@@ -51,6 +51,7 @@ CELERY_RESULT_SERIALIZER = "json"
 
 # Gemini
 GOOGLE_GEMINI_API_KEY = env.str("GOOGLE_GEMINI_API_KEY", default="")
+AUTOQC_API_KEY = env.str("AUTOQC_API_KEY", default="")
 
 # Langfuse
 LANGFUSE_HOST = env.str("LANGFUSE_HOST", default="")
