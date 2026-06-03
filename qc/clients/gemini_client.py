@@ -64,8 +64,8 @@ class GeminiClient:
         return {
             "contents": [{"parts": parts}],
             "generationConfig": {
-                "temperature": 0.1,
-                "topP": 0.8,
+                "temperature": 0,
+                "topP": 1,
                 "topK": 40,
                 "maxOutputTokens": 32768,
                 "responseMimeType": "application/json",

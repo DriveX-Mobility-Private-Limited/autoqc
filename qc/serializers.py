@@ -20,3 +20,8 @@ class VehicleAnalysisRequestSerializer(serializers.Serializer):
 
 class VehicleAnalysisTaskResultSerializer(serializers.Serializer):
     task_id = serializers.CharField(required=True)
+
+
+class QCImageTestSerializer(serializers.Serializer):
+    image_url = serializers.URLField(required=True)
+    angle = serializers.CharField(required=False, allow_blank=True, default="")

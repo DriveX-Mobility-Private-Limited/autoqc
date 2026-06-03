@@ -4,11 +4,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from autoqc.celery_app import app as celery_app
+from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
+from qc.serializers import QCImageTestSerializer
 from qc.serializers import VehicleAnalysisRequestSerializer
 from qc.serializers import VehicleAnalysisTaskResultSerializer
 from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
 )
+from qc.tasks.helpers import run_gemini
 from qc.tasks.listing_qc import vehicle_analysis_qc
 from logger import get_logger
 
@@ -127,3 +130,38 @@ class VehicleAnalysisTaskResultView(APIView):
             response_data["result"] = task_result.result
 
         return Response(response_data, status=status.HTTP_200_OK)
+
+
+class QCImageTestView(APIView):
+    """Run QC synchronously for one arbitrary image URL."""
+
+    def post(self, request: Request) -> Response:
+        try:
+            serializer = QCImageTestSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            image_url = serializer.validated_data["image_url"]
+            angle = serializer.validated_data["angle"]
+
+            raw_ai_response = run_gemini(
+                image_urls=[image_url],
+                model_name=AUTO_QC_GEMINI_MODEL_NAME,
+            )
+            return Response(
+                {
+                    "success": bool(raw_ai_response),
+                    "image_url": image_url,
+                    "angle": angle,
+                    "raw_ai_response": raw_ai_response,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            logging.exception("Error running QC image test")
+            return Response(
+                {
+                    "success": False,
+                    "error": "Failed to run QC image test",
+                    "details": str(e),
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
