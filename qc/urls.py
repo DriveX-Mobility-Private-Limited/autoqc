@@ -15,17 +15,17 @@ urlpatterns = [
         name="boulevard-qc-test",
     ),
     path(
-        "backstage/api/vehicle-analysis/",
+        "api/vehicle-analysis/",
         VehicleAnalysisView.as_view(),
         name="vehicle-analysis",
     ),
     path(
-        "backstage/api/vehicle-analysis/task-result/",
+        "api/vehicle-analysis/task-result/",
         VehicleAnalysisTaskResultView.as_view(),
         name="vehicle-analysis-task-result",
     ),
     path(
-        "backstage/api/vehicle-analysis/results/<str:transaction_id>/",
+        "api/vehicle-analysis/results/<str:transaction_id>/",
         VehicleAnalysisResultsView.as_view(),
         name="vehicle-analysis-results",
     ),
