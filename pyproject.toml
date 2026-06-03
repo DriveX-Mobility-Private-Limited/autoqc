@@ -19,6 +19,7 @@ dependencies = [
     "pillow-avif-plugin>=1.4",
     "environs>=11.0",
     "gunicorn>=21.2",
+    "gevent>=24.0",
 ]
 
 [build-system]

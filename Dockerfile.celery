@@ -18,4 +18,4 @@ RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-CMD ["celery", "-A", "autoqc", "worker", "--loglevel=info", "--concurrency=4"]
+CMD ["sh", "scripts/start-worker.sh"]
