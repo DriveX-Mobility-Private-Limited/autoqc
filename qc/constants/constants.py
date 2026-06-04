@@ -1,6 +1,10 @@
+from pathlib import Path
+
 from environs import Env
 
+BASE_DIR = Path(__file__).resolve(strict=True).parent.parent.parent
 env = Env()
+env.read_env(str(BASE_DIR / ".env"))
 
 ENVIRONMENT = env("ENVIRONMENT", default="development")
 
