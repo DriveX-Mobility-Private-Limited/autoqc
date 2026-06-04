@@ -7,7 +7,7 @@ env.read_env()
 # Security
 SECRET_KEY = env.str("SECRET_KEY")
 DEBUG = env.bool("DEBUG", default=False)
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["*"])
 
 # Application definition
 INSTALLED_APPS = [
@@ -78,9 +78,7 @@ REST_FRAMEWORK = {
 }
 
 # Celery
-CELERY_BROKER_URL = env.str(
-    "CELERY_BROKER_URL", default="redis://localhost:6379/1"
-)
+CELERY_BROKER_URL = env.str("CELERY_BROKER_URL", default="redis://localhost:6379/1")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"

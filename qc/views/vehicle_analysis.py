@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from autoqc.celery_app import app as celery_app
+from autoqc.responses import StandardResponse
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
 from qc.serializers import QCImageTestSerializer
 from qc.serializers import VehicleAnalysisRequestSerializer
@@ -52,10 +53,10 @@ class VehicleAnalysisView(APIView):
                 "message": "Vehicle analysis started",
             }
 
-            return Response(response_data, status=status.HTTP_200_OK)
+            return StandardResponse(response_data, status=status.HTTP_200_OK)
         except Exception as e:
             logging.exception("Error triggering vehicle analysis")
-            return Response(
+            return StandardResponse(
                 {
                     "error": "Failed to trigger analysis",
                     "details": str(e),
@@ -70,7 +71,7 @@ class VehicleAnalysisResultsView(APIView):
     def get(self, request: Request, transaction_id: str) -> Response:
         try:
             if not transaction_id:
-                return Response(
+                return StandardResponse(
                     {
                         "error": "Missing required parameter",
                         "details": "transaction_id is required in the path",
@@ -82,7 +83,7 @@ class VehicleAnalysisResultsView(APIView):
                 transaction_id,
             )
             if not angle_results:
-                return Response(
+                return StandardResponse(
                     {
                         "transaction_id": transaction_id,
                         "results": [],
@@ -92,7 +93,7 @@ class VehicleAnalysisResultsView(APIView):
                 )
 
             results_list = list(angle_results.values())
-            return Response(
+            return StandardResponse(
                 {
                     "transaction_id": transaction_id,
                     "results": results_list,
@@ -103,7 +104,7 @@ class VehicleAnalysisResultsView(APIView):
             )
         except Exception as e:
             logging.exception("Error retrieving vehicle analysis results")
-            return Response(
+            return StandardResponse(
                 {
                     "error": "Failed to retrieve results",
                     "details": str(e),
@@ -129,7 +130,7 @@ class VehicleAnalysisTaskResultView(APIView):
         if task_result.ready():
             response_data["result"] = task_result.result
 
-        return Response(response_data, status=status.HTTP_200_OK)
+        return StandardResponse(response_data, status=status.HTTP_200_OK)
 
 
 class QCImageTestView(APIView):
