@@ -1,0 +1,90 @@
+from dataclasses import dataclass
+
+import boto3
+from botocore.client import Config
+
+from logger import get_logger
+from qc.constants.constants import PROCX_S3_ACCESS_KEY
+from qc.constants.constants import PROCX_S3_BUCKET_NAME
+from qc.constants.constants import PROCX_S3_BUCKET_REGION
+from qc.constants.constants import PROCX_S3_SECRET_ACCESS_KEY
+from qc.constants.enums import PresignedUrlOperationType
+
+logging = get_logger()
+
+
+@dataclass
+class S3Config:
+    bucket_name: str = PROCX_S3_BUCKET_NAME
+    access_key: str = PROCX_S3_ACCESS_KEY
+    secret_access_key: str = PROCX_S3_SECRET_ACCESS_KEY
+    bucket_region: str = PROCX_S3_BUCKET_REGION
+    presigned_url_expiration_time: int = 3600
+
+    @property
+    def is_configured(self) -> bool:
+        return all(
+            [
+                self.bucket_name,
+                self.access_key,
+                self.secret_access_key,
+                self.bucket_region,
+            ],
+        )
+
+
+DEFAULT_S3_CONFIG = S3Config()
+
+
+class S3Client:
+    def __init__(self, config: S3Config = DEFAULT_S3_CONFIG) -> None:
+        self.config = config
+        self.bucket_name = config.bucket_name
+        self.link_expiration_time = config.presigned_url_expiration_time
+        self.client = None
+
+        if not config.is_configured:
+            logging.error("PROCX S3 client is not configured")
+            return
+
+        self.client = boto3.client(
+            "s3",
+            aws_access_key_id=config.access_key,
+            aws_secret_access_key=config.secret_access_key,
+            config=Config(
+                signature_version="s3v4",
+                region_name=config.bucket_region,
+            ),
+            region_name=config.bucket_region,
+        )
+
+    def generate_presigned_get_url(self, file_key: str) -> str | None:
+        return self._generate_presigned_url(
+            file_key=file_key,
+            operation_type=PresignedUrlOperationType.GET.value,
+        )
+
+    def _generate_presigned_url(
+        self,
+        file_key: str,
+        operation_type: str,
+    ) -> str | None:
+        if not self.client:
+            return None
+
+        try:
+            operation = (
+                "put_object"
+                if operation_type == PresignedUrlOperationType.PUT.value
+                else "get_object"
+            )
+            return self.client.generate_presigned_url(
+                operation,
+                Params={"Bucket": self.bucket_name, "Key": file_key},
+                ExpiresIn=self.link_expiration_time,
+            )
+        except Exception as e:
+            logging.error(
+                f"Failed to generate S3 presigned URL for {file_key}: {e}",
+            )
+            return None
