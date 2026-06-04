@@ -102,7 +102,9 @@ class GeminiClient:
             response.raise_for_status()
             header_content_type = response.headers.get("Content-Type")
             if header_content_type:
-                mime_type = header_content_type.split(";")[0].strip()
+                header_mime_type = header_content_type.split(";")[0].strip()
+                if header_mime_type.startswith("image/"):
+                    mime_type = header_mime_type
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 size_bytes = 0
