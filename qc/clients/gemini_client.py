@@ -60,9 +60,15 @@ class GeminiClient:
                     top_k=40,
                     max_output_tokens=32768,
                     response_mime_type="application/json",
+                    thinking_config=types.ThinkingConfig(
+                        include_thoughts=False,
+                        thinking_budget=8192,
+                    ),
                 ),
             )
-            return self._parse_response(response.text, image_urls)
+            token_usage = self._get_token_usage(response)
+            logging.info(f"Gemini token usage: {token_usage}")
+            return self._parse_response(response.text, image_urls, token_usage)
         except Exception:
             logging.exception("Gemini API call failed")
             return []
@@ -124,6 +130,7 @@ class GeminiClient:
         self,
         response_text: str | None,
         image_urls: list[str],
+        token_usage: dict | None = None,
     ) -> list[dict]:
         if not response_text:
             return []
@@ -142,8 +149,37 @@ class GeminiClient:
             result_dict["view_label"] = self._normalize_view_label(
                 result.view_label,
             )
+            if token_usage:
+                result_dict["token_usage"] = token_usage
             results.append(result_dict)
         return results
+
+    def _get_token_usage(self, response) -> dict:
+        usage = getattr(response, "usage_metadata", None)
+        if not usage:
+            return {"model": self.model_name}
+
+        usage_data = {}
+        if hasattr(usage, "model_dump"):
+            usage_data = usage.model_dump(exclude_none=True)
+        elif isinstance(usage, dict):
+            usage_data = {
+                key: value for key, value in usage.items() if value is not None
+            }
+        else:
+            for field in (
+                "prompt_token_count",
+                "candidates_token_count",
+                "total_token_count",
+                "cached_content_token_count",
+                "thoughts_token_count",
+            ):
+                value = getattr(usage, field, None)
+                if value is not None:
+                    usage_data[field] = value
+
+        usage_data["model"] = self.model_name
+        return usage_data
 
     @staticmethod
     def _guess_mime_type(url: str) -> str:
