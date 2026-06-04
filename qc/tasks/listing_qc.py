@@ -1,3 +1,4 @@
+from celery import chord
 from celery import shared_task
 
 from autoqc.celery_app import app as celery_app
@@ -17,8 +18,6 @@ GALAXY_RESULT_TASK_NAME = "galaxy.tasks.process_autoqc_result"
 GALAXY_RESULT_QUEUE = "default"
 
 
-
-
 @shared_task(name="autoqc.tasks.process_listing_qc")
 def process_listing_qc(
     c2c_inventory_id: int,
@@ -33,10 +32,47 @@ def process_listing_qc(
         f"Processing listing QC for {c2c_inventory_id=}, image_count={len(image_urls)}",
     )
 
-    ai_response = run_gemini(
-        image_urls=image_urls,
+    if not image_urls:
+        publish_listing_qc_result.delay(c2c_inventory_id=c2c_inventory_id, results=[])
+        return
+
+    header = [
+        process_listing_qc_image.s(
+            image_url=image_url,
+            image_index=image_index,
+        )
+        for image_index, image_url in enumerate(image_urls)
+    ]
+    chord(header)(
+        publish_listing_qc_result.s(c2c_inventory_id=c2c_inventory_id),
+    )
+
+
+@shared_task(name="autoqc.tasks.process_listing_qc_image")
+def process_listing_qc_image(
+    image_url: str,
+    image_index: int,
+) -> list[dict]:
+    logging.info(
+        f"Processing listing QC image for image_index={image_index}",
+    )
+    results = run_gemini(
+        image_urls=[image_url],
         model_name=AUTO_QC_GEMINI_MODEL_NAME,
     )
+    for result in results:
+        result["image_index"] = image_index
+    return results
+
+
+@shared_task(name="autoqc.tasks.publish_listing_qc_result")
+def publish_listing_qc_result(
+    results: list[list[dict]],
+    c2c_inventory_id: int,
+) -> None:
+    ai_response = [
+        result for image_results in results for result in (image_results or [])
+    ]
 
     celery_app.send_task(
         GALAXY_RESULT_TASK_NAME,
@@ -121,7 +157,6 @@ def vehicle_analysis_qc(
         },
     )
     return result
-
 
 
 def resolve_vehicle_image_url(image_path: str) -> str | None:
