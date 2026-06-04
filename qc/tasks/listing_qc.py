@@ -122,12 +122,10 @@ def vehicle_analysis_qc(
     )
     return result
 
-def build_procx_s3_key(image_path: str) -> str:
-    return f"{PROCX_S3_BUCKET_PATH}{image_path.strip().lstrip('/')}"
 
 
 def resolve_vehicle_image_url(image_path: str) -> str | None:
     if not image_path:
         return None
 
-    return S3Client().generate_presigned_get_url(build_procx_s3_key(image_path))
+    return S3Client().generate_presigned_get_url(image_path)
