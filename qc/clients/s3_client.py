@@ -21,17 +21,6 @@ class S3Config:
     bucket_region: str = PROCX_S3_BUCKET_REGION
     presigned_url_expiration_time: int = 3600
 
-    @property
-    def is_configured(self) -> bool:
-        return all(
-            [
-                self.bucket_name,
-                self.access_key,
-                self.secret_access_key,
-                self.bucket_region,
-            ],
-        )
-
 
 DEFAULT_S3_CONFIG = S3Config()
 
@@ -43,14 +32,16 @@ class S3Client:
         self.link_expiration_time = config.presigned_url_expiration_time
         self.client = None
 
-        if not config.is_configured:
-            logging.error("PROCX S3 client is not configured")
-            return
+        credentials = {}
+        if config.access_key and config.secret_access_key:
+            credentials = {
+                "aws_access_key_id": config.access_key,
+                "aws_secret_access_key": config.secret_access_key,
+            }
 
         self.client = boto3.client(
             "s3",
-            aws_access_key_id=config.access_key,
-            aws_secret_access_key=config.secret_access_key,
+            **credentials,
             config=Config(
                 signature_version="s3v4",
                 region_name=config.bucket_region,
