@@ -56,6 +56,7 @@ dependencies = [
     { name = "boto3" },
     { name = "celery" },
     { name = "django" },
+    { name = "django-cors-headers" },
     { name = "django-redis" },
     { name = "djangorestframework" },
     { name = "environs" },
@@ -76,6 +77,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.34" },
     { name = "celery", specifier = ">=5.3" },
     { name = "django", specifier = ">=4.2,<5.0" },
+    { name = "django-cors-headers", specifier = ">=4.4" },
     { name = "django-redis", specifier = ">=5.4" },
     { name = "djangorestframework", specifier = ">=3.14" },
     { name = "environs", specifier = ">=11.0" },
@@ -332,6 +334,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/11/b5/f1a53dc68da6429d6e0345bb848161e2381a2e9f02700148911e8582c2b3/django-4.2.30.tar.gz", hash = "sha256:4ebc7a434e3819db6cf4b399fb5b3f536310a30e8486f08b66886840be84b37c", size = 10468707 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/39/b7/a7c96f239cf91313a6589233fed55111c7063b26683b226802732c455dbc/django-4.2.30-py3-none-any.whl", hash = "sha256:4d07aaf1c62f9984842b67c2874ebbf7056a17be253860299b93ae1881faad65", size = 7997231 },
+]
+
+[[package]]
+name = "django-cors-headers"
+version = "4.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "asgiref" },
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/21/39/55822b15b7ec87410f34cd16ce04065ff390e50f9e29f31d6d116fc80456/django_cors_headers-4.9.0.tar.gz", hash = "sha256:fe5d7cb59fdc2c8c646ce84b727ac2bca8912a247e6e68e1fb507372178e59e8", size = 21458 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/d8/19ed1e47badf477d17fb177c1c19b5a21da0fd2d9f093f23be3fb86c5fab/django_cors_headers-4.9.0-py3-none-any.whl", hash = "sha256:15c7f20727f90044dcee2216a9fd7303741a864865f0c3657e28b7056f61b449", size = 12809 },
 ]
 
 [[package]]
