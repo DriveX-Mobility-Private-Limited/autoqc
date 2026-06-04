@@ -1,3 +1,4 @@
+from corsheaders.defaults import default_headers
 from environs import Env
 
 env = Env()
@@ -10,10 +11,46 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
 
 # Application definition
 INSTALLED_APPS = [
+    "corsheaders",
     "django.contrib.contenttypes",
     "django.contrib.auth",
     "rest_framework",
     "qc",
+]
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",
+]
+
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
+SECURE_REFERRER_POLICY = "same-origin"
+SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_HSTS_SECONDS = 60 * 60 * 24 * 365
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_METHODS: tuple[str, ...] = (
+    "GET",
+    "POST",
+    "PATCH",
+    "OPTIONS",
+    "DELETE",
+    "PUT",
+)
+CORS_ALLOW_HEADERS: list[str] = [
+    *list(default_headers),
+    "Content-Type",
+    "Rid",
+    "St-Auth-Mode",
+    "Dnt",
+    "Fdi-Version",
 ]
 
 ROOT_URLCONF = "autoqc.urls"
