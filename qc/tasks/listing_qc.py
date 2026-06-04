@@ -1,7 +1,9 @@
 from celery import shared_task
 
 from autoqc.celery_app import app as celery_app
+from qc.clients.s3_client import S3Client
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
+from qc.constants.constants import PROCX_S3_BUCKET_PATH
 from qc.constants.enums import C2CQCSource
 from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
@@ -15,6 +17,8 @@ GALAXY_RESULT_TASK_NAME = "galaxy.tasks.process_autoqc_result"
 GALAXY_RESULT_QUEUE = "default"
 
 
+
+
 @shared_task(name="autoqc.tasks.process_listing_qc")
 def process_listing_qc(
     c2c_inventory_id: int,
@@ -26,8 +30,7 @@ def process_listing_qc(
     persistence (see AutoQCResultProcessor).
     """
     logging.info(
-        f"Processing listing QC for {c2c_inventory_id=}, "
-        f"image_count={len(image_urls)}",
+        f"Processing listing QC for {c2c_inventory_id=}, image_count={len(image_urls)}",
     )
 
     ai_response = run_gemini(
@@ -59,16 +62,15 @@ def vehicle_analysis_qc(
     image_url: str = "",
 ) -> dict:
     logging.info(
-        f"Starting vehicle analysis for {vehicle_id=}, "
-        f"{transaction_id=}, {angle=}",
+        f"Starting vehicle analysis for {vehicle_id=}, {transaction_id=}, {angle=}",
     )
 
     redis_service = VehicleAnalysisRedisService()
-    resolved_image_url = image_url or image_path
-    if not resolved_image_url.startswith(("http://", "https://")):
+    resolved_image_url = resolve_vehicle_image_url(image_path or image_url)
+    if not resolved_image_url:
         result = {
             "success": False,
-            "error": "image_url is required when image_path is not a URL",
+            "error": "Failed to generate S3 presigned URL for image_path",
             "task_id": self.request.id,
             "vehicle_id": vehicle_id,
             "image_path": image_path,
@@ -119,3 +121,13 @@ def vehicle_analysis_qc(
         },
     )
     return result
+
+def build_procx_s3_key(image_path: str) -> str:
+    return f"{PROCX_S3_BUCKET_PATH}{image_path.strip().lstrip('/')}"
+
+
+def resolve_vehicle_image_url(image_path: str) -> str | None:
+    if not image_path:
+        return None
+
+    return S3Client().generate_presigned_get_url(build_procx_s3_key(image_path))
