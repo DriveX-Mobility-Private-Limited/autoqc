@@ -5,7 +5,9 @@ from rest_framework.views import APIView
 
 from autoqc.celery_app import app as celery_app
 from autoqc.responses import StandardResponse
+from qc.clients.nano_banana_client import NanoBananaClient
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
+from qc.serializers import ImageCleanupSerializer
 from qc.serializers import QCImageTestSerializer
 from qc.serializers import VehicleAnalysisRequestSerializer
 from qc.serializers import VehicleAnalysisTaskResultSerializer
@@ -162,6 +164,43 @@ class QCImageTestView(APIView):
                 {
                     "success": False,
                     "error": "Failed to run QC image test",
+                    "details": str(e),
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+class ImageCleanupView(APIView):
+    """Remove humans/clutter from a vehicle inspection image."""
+
+    def post(self, request: Request) -> Response:
+        try:
+            serializer = ImageCleanupSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            image_url = serializer.validated_data["image_url"]
+
+            cleanup_result = NanoBananaClient().cleanup_image(image_url)
+            if not cleanup_result:
+                return StandardResponse(
+                    {
+                        "error": "Failed to clean up image",
+                        "image_url": image_url,
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+            return StandardResponse(
+                {
+                    "image_url": image_url,
+                    **cleanup_result,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            logging.exception("Error cleaning up image")
+            return StandardResponse(
+                {
+                    "error": "Failed to clean up image",
                     "details": str(e),
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
