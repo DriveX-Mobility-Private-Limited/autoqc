@@ -20,4 +20,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-CMD ["gunicorn", "autoqc.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]
+CMD ["gunicorn", "autoqc.wsgi:application", "--bind", "0.0.0.0:8010", "--workers", "4"]
