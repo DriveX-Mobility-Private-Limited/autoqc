@@ -55,27 +55,6 @@ class S3Client:
             operation_type=PresignedUrlOperationType.GET.value,
         )
 
-    def upload_bytes(
-        self,
-        file_key: str,
-        body: bytes,
-        content_type: str,
-    ) -> bool:
-        if not self.client:
-            return False
-
-        try:
-            self.client.put_object(
-                Bucket=self.bucket_name,
-                Key=file_key,
-                Body=body,
-                ContentType=content_type,
-            )
-            return True
-        except Exception as e:
-            logging.error(f"Failed to upload S3 object for {file_key}: {e}")
-            return False
-
     def _generate_presigned_url(
         self,
         file_key: str,

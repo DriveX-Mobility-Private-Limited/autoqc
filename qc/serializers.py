@@ -29,6 +29,3 @@ class QCImageTestSerializer(serializers.Serializer):
 
 class ImageCleanupSerializer(serializers.Serializer):
     image_url = serializers.URLField(required=True)
-    c2c_inventory_id = serializers.IntegerField(required=False)
-    image_index = serializers.IntegerField(required=False, min_value=0)
-    upload_to_s3 = serializers.BooleanField(required=False, default=True)

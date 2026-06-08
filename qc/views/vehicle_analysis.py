@@ -177,12 +177,9 @@ class ImageCleanupView(APIView):
         try:
             serializer = ImageCleanupSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
-            validated_data = serializer.validated_data
-            image_url = validated_data["image_url"]
-            upload_to_s3 = validated_data["upload_to_s3"]
+            image_url = serializer.validated_data["image_url"]
 
-            client = NanoBananaClient()
-            cleanup_result = client.cleanup_image(image_url)
+            cleanup_result = NanoBananaClient().cleanup_image(image_url)
             if not cleanup_result:
                 return StandardResponse(
                     {
@@ -191,18 +188,6 @@ class ImageCleanupView(APIView):
                     },
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
-
-            if upload_to_s3:
-                upload_result = client.upload_cleanup_result(
-                    cleanup_result=cleanup_result,
-                    c2c_inventory_id=validated_data.get("c2c_inventory_id"),
-                    image_index=validated_data.get("image_index"),
-                )
-                if upload_result:
-                    cleanup_result.update(upload_result)
-                    cleanup_result["upload_status"] = "SUCCESS"
-                else:
-                    cleanup_result["upload_status"] = "FAILED"
 
             return StandardResponse(
                 {
