@@ -12,8 +12,9 @@ logging = get_logger()
 CLEANUP_PROMPT = """
 Edit this vehicle inspection image.
 
-Remove all people, humans, body parts, bags, personal items, clutter, and other
-foreground/background distractions that are not part of the primary two-wheeler.
+Remove all people, humans, body parts, bags, personal items, clutter, other
+vehicles, and any foreground/background distractions that are not part of the
+primary two-wheeler.
 
 Keep the primary two-wheeler exactly the same: shape, color, registration plate,
 odometer/details if visible, lighting direction, camera angle, crop,
