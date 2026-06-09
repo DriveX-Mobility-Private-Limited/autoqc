@@ -31,8 +31,9 @@ class NanoBananaClient(GeminiClient):
         super().__init__(model_name=model_name)
 
     def cleanup_image(self, image_url: str) -> dict | None:
-        image = self._download_image(image_url)
+        image = None
         try:
+            image = self._download_image(image_url)
             response = self._client().models.generate_content(
                 model=self.model_name,
                 contents=[
@@ -54,6 +55,7 @@ class NanoBananaClient(GeminiClient):
             logging.info(f"Nano Banana token usage: {token_usage}")
             return {
                 **edited_image,
+                "success": True,
                 "model": self.model_name,
                 "token_usage": token_usage,
             }
@@ -61,7 +63,8 @@ class NanoBananaClient(GeminiClient):
             logging.exception("Nano Banana image cleanup failed")
             return None
         finally:
-            self._delete_file(image.file_path)
+            if image:
+                self._delete_file(image.file_path)
 
     def _extract_image(self, response) -> dict | None:
         parts = getattr(response, "parts", None) or []

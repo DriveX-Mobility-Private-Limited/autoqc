@@ -4,7 +4,6 @@ from celery import shared_task
 from autoqc.celery_app import app as celery_app
 from qc.clients.s3_client import S3Client
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
-from qc.constants.constants import PROCX_S3_BUCKET_PATH
 from qc.constants.enums import C2CQCSource
 from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
