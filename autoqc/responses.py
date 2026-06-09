@@ -1,5 +1,9 @@
+from typing import Any
+
 from rest_framework import status as status_code
 from rest_framework.response import Response
+
+JsonDict = dict[str, Any]
 
 
 class StandardResponseMessages:
@@ -16,7 +20,7 @@ class StandardResponseMessages:
 class StandardResponse(Response):
     def __init__(
         self,
-        data: dict | None = None,
+        data: JsonDict | None = None,
         status: int = status_code.HTTP_200_OK,
         message: str | None = None,
         **kwargs,

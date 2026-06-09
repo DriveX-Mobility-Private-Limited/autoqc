@@ -1,115 +1,166 @@
+from celery import chord
 from celery import shared_task
 
-from qc.clients.galaxy_client import GalaxyClient
+from autoqc.celery_app import app as celery_app
+from qc.clients.s3_client import S3Client
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
-from qc.constants.enums import C2CQCSource, C2CQCStatus, C2CQCSubStatusEnum
-from qc.tasks.helpers import derive_qc_status_and_reasons, is_ev_vehicle, run_gemini
+from qc.constants.constants import PROCX_S3_BUCKET_PATH
+from qc.constants.enums import C2CQCSource
+from qc.services.vehicle_analysis_redis_service import (
+    VehicleAnalysisRedisService,
+)
+from qc.tasks.helpers import run_gemini
 from logger import get_logger
 
 logging = get_logger()
 
+GALAXY_RESULT_TASK_NAME = "galaxy.tasks.process_autoqc_result"
+GALAXY_RESULT_QUEUE = "default"
 
-@shared_task(bind=True)
-def listing_qc_task(
-    self,
+
+@shared_task(name="autoqc.tasks.process_listing_qc")
+def process_listing_qc(
     c2c_inventory_id: int,
-    callback_url: str,
-) -> bool:
+    image_urls: list[str],
+) -> None:
+    """
+    Consume a listing-QC job published by galaxy, run Gemini, and publish
+    the raw response back to galaxy. Galaxy owns QC verdict derivation and
+    persistence (see AutoQCResultProcessor).
+    """
     logging.info(
-        f"Starting listing QC for c2c_inventory_id={c2c_inventory_id}",
+        f"Processing listing QC for {c2c_inventory_id=}, image_count={len(image_urls)}",
     )
 
-    galaxy_client = GalaxyClient()
-
-    # Fetch inventory data from galaxy
-    inventory_data = galaxy_client.get_inventory(c2c_inventory_id)
-    if not inventory_data:
-        logging.error(
-            f"Failed to fetch inventory {c2c_inventory_id} from galaxy",
-        )
-        return False
-
-    # Check if already passed
-    if inventory_data.get("qc_status") == C2CQCStatus.PASSED.value:
-        logging.info(
-            f"Inventory {c2c_inventory_id} already passed QC, skipping",
-        )
-        return True
-
-    # Check if EV
-    if is_ev_vehicle(inventory_data):
-        payload = {
-            "c2c_inventory_id": c2c_inventory_id,
-            "qc_status": C2CQCStatus.FAILED.value,
-            "sub_statuses": [C2CQCSubStatusEnum.ELECTRIC_VEHICLE.value],
-            "selected_plate": None,
-            "raw_ai_response": [],
-            "qc_source": C2CQCSource.AI.value,
-        }
-        galaxy_client.post_qc_result(callback_url, payload)
-        return False
-
-    # Get images (prefer DMS images for AI processing)
-    image_urls = inventory_data.get("dms_image_urls") or inventory_data.get(
-        "image_urls", [],
-    )
     if not image_urls:
-        logging.error(
-            f"No images found for inventory {c2c_inventory_id}",
+        publish_listing_qc_result.delay(c2c_inventory_id=c2c_inventory_id, results=[])
+        return
+
+    header = [
+        process_listing_qc_image.s(
+            image_url=image_url,
+            image_index=image_index,
         )
-        return False
+        for image_index, image_url in enumerate(image_urls)
+    ]
+    chord(header)(
+        publish_listing_qc_result.s(c2c_inventory_id=c2c_inventory_id),
+    )
 
-    expected_make_model = inventory_data.get("expected_make_model", "")
-    registration_number = inventory_data.get("registration_number", "")
 
-    # Call Gemini
+@shared_task(name="autoqc.tasks.process_listing_qc_image")
+def process_listing_qc_image(
+    image_url: str,
+    image_index: int,
+) -> list[dict]:
+    logging.info(
+        f"Processing listing QC image for image_index={image_index}",
+    )
+    results = run_gemini(
+        image_urls=[image_url],
+        model_name=AUTO_QC_GEMINI_MODEL_NAME,
+    )
+    for result in results:
+        result["image_index"] = image_index
+    return results
+
+
+@shared_task(name="autoqc.tasks.publish_listing_qc_result")
+def publish_listing_qc_result(
+    results: list[list[dict]],
+    c2c_inventory_id: int,
+) -> None:
+    ai_response = [
+        result for image_results in results for result in (image_results or [])
+    ]
+
+    celery_app.send_task(
+        GALAXY_RESULT_TASK_NAME,
+        kwargs={
+            "c2c_inventory_id": c2c_inventory_id,
+            "raw_ai_response": ai_response or [],
+            "qc_source": C2CQCSource.AI.value,
+        },
+        queue=GALAXY_RESULT_QUEUE,
+    )
+    logging.info(
+        f"Published autoqc result back to galaxy for {c2c_inventory_id=}",
+    )
+
+
+@shared_task(bind=True, name="autoqc.tasks.vehicle_analysis_qc")
+def vehicle_analysis_qc(
+    self,  # noqa: ANN001
+    vehicle_id: int,
+    image_path: str,
+    transaction_id: str,
+    angle: str,
+    image_url: str = "",
+) -> dict:
+    logging.info(
+        f"Starting vehicle analysis for {vehicle_id=}, {transaction_id=}, {angle=}",
+    )
+
+    redis_service = VehicleAnalysisRedisService()
+    resolved_image_url = resolve_vehicle_image_url(image_path or image_url)
+    if not resolved_image_url:
+        result = {
+            "success": False,
+            "error": "Failed to generate S3 presigned URL for image_path",
+            "task_id": self.request.id,
+            "vehicle_id": vehicle_id,
+            "image_path": image_path,
+            "image_url": image_url,
+            "transaction_id": transaction_id,
+            "angle": angle,
+        }
+        redis_service.save_result(transaction_id, angle, result)
+        return result
+
     ai_response = run_gemini(
-        image_urls=image_urls,
-        expected_make_model=expected_make_model,
+        image_urls=[resolved_image_url],
         model_name=AUTO_QC_GEMINI_MODEL_NAME,
     )
 
     if not ai_response:
-        logging.error("AI response not available")
-        payload = {
-            "c2c_inventory_id": c2c_inventory_id,
-            "qc_status": C2CQCStatus.NEEDS_REVIEW.value,
-            "sub_statuses": [
-                C2CQCSubStatusEnum.AI_RESPONSE_NOT_AVAILABLE.value,
-            ],
-            "selected_plate": None,
+        result = {
+            "success": False,
+            "error": "AI response not available",
+            "task_id": self.request.id,
+            "vehicle_id": vehicle_id,
+            "image_path": image_path,
+            "image_url": resolved_image_url,
+            "transaction_id": transaction_id,
+            "angle": angle,
             "raw_ai_response": [],
-            "qc_source": C2CQCSource.AI.value,
         }
-        galaxy_client.post_qc_result(callback_url, payload)
-        return False
+        redis_service.save_result(transaction_id, angle, result)
+        return result
 
-    # Derive QC status
-    qc_status, sub_statuses, selected_plate = derive_qc_status_and_reasons(
-        results=ai_response,
-        registration_number=registration_number,
-    )
-
-    logging.info(
-        f"Listing QC results - inventory={c2c_inventory_id}, "
-        f"status={qc_status}, sub_statuses={sub_statuses}, "
-        f"plate={selected_plate}",
-    )
-
-    # Post result back to galaxy webhook
-    payload = {
-        "c2c_inventory_id": c2c_inventory_id,
-        "qc_status": qc_status,
-        "sub_statuses": sub_statuses,
-        "selected_plate": selected_plate,
+    result = {
+        "success": True,
+        "task_id": self.request.id,
+        "vehicle_id": vehicle_id,
+        "image_path": image_path,
+        "image_url": resolved_image_url,
+        "transaction_id": transaction_id,
+        "angle": angle,
         "raw_ai_response": ai_response,
-        "qc_source": C2CQCSource.AI.value,
     }
+    redis_service.save_result(
+        transaction_id,
+        angle,
+        {
+            "result": result,
+            "status": "SUCCESS",
+            "task_id": self.request.id,
+        },
+    )
+    return result
 
-    success = galaxy_client.post_qc_result(callback_url, payload)
-    if not success:
-        logging.error(
-            f"Failed to post QC result for inventory {c2c_inventory_id}",
-        )
 
-    return success
+def resolve_vehicle_image_url(image_path: str) -> str | None:
+    if not image_path:
+        return None
+
+    return S3Client().generate_presigned_get_url(image_path)

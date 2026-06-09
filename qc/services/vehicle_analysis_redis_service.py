@@ -13,10 +13,10 @@ logging = get_logger()
 class VehicleAnalysisRedisService:
     """
     vehicle_analysis:{transaction_id}   (HASH)
-    ├─ front  → compressed bytes
-    ├─ rear   → compressed bytes
-    ├─ left   → compressed bytes
-    └─ right  → compressed bytes
+    ├─ front  -> compressed bytes
+    ├─ rear   -> compressed bytes
+    ├─ left   -> compressed bytes
+    └─ right  -> compressed bytes
     """
 
     REDIS_KEY_PREFIX = "vehicle_analysis"
@@ -46,7 +46,7 @@ class VehicleAnalysisRedisService:
             pipe.execute()
 
             logging.info(
-                "Saved vehicle analysis: tx=%s angle=%s size=%dB→%dB",
+                "Saved vehicle analysis: tx=%s angle=%s size=%dB->%dB",
                 transaction_id,
                 angle,
                 len(raw),
@@ -72,7 +72,6 @@ class VehicleAnalysisRedisService:
                 angle = angle_bytes.decode()
                 decompressed = self._decompressor.decompress(compressed)
                 results[angle] = json.loads(decompressed)
-
         except Exception:
             logging.exception(
                 "Failed retrieving vehicle analysis: tx=%s",

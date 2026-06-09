@@ -1,43 +1,25 @@
+from pathlib import Path
+
 from environs import Env
 
+BASE_DIR = Path(__file__).resolve(strict=True).parent.parent.parent
 env = Env()
+env.read_env(str(BASE_DIR / ".env"))
 
 ENVIRONMENT = env("ENVIRONMENT", default="development")
 
 # Gemini model configuration
 AUTO_QC_GEMINI_MODEL_NAME = env(
     "AUTO_QC_GEMINI_MODEL_NAME",
-    default="gemini-3-pro-preview",
+    default="gemini-2.5-flash",
 )
-SELL_FLOW_GEMINI_MODEL_NAME = env(
-    "SELL_FLOW_GEMINI_MODEL_NAME",
-    default="gemini-2.5-pro",
+AUTO_QC_GEMINI_IMAGE_EDIT_MODEL_NAME = env(
+    "AUTO_QC_GEMINI_IMAGE_EDIT_MODEL_NAME",
+    default="gemini-3.1-flash-image",
 )
 
-# S3 configuration
 PROCX_S3_BUCKET_NAME = env("PROCX_S3_BUCKET_NAME", default="")
-PROCX_S3_BUCKET_REGION = env("PROCX_S3_BUCKET_REGION", default="ap-south-1")
+PROCX_S3_BUCKET_PATH = env("PROCX_S3_BUCKET_PATH", default="")
+PROCX_S3_BUCKET_REGION = env("PROCX_S3_BUCKET_REGION", default="")
 PROCX_S3_ACCESS_KEY = env("PROCX_S3_ACCESS_KEY", default="")
 PROCX_S3_SECRET_ACCESS_KEY = env("PROCX_S3_SECRET_ACCESS_KEY", default="")
-REACHX_USE_ACCELERATE_ENDPOINT = (
-    env("REACHX_USE_ACCELERATE_ENDPOINT", default="True") == "True"
-)
-
-# ImageKit
-IMAGE_PATH_PREFIX = "https://ik.imagekit.io/drivex/"
-EXCEL_FILES_PREFIX = "Excel_files/"
-IMAGEKIT_PRIVATE_KEY = env("IMAGEKIT_PRIVATE_KEY", default="")
-
-# QC thresholds
-CONFIDENCE_THRESHOLD = 90.0
-THRESHOLD = 2
-
-# EV ineligible fuel types
-C2C_INELIGIBLE_FUEL_TYPE = [
-    "pure ev",
-    "electric(bov)",
-    "electric(bov)",
-    "pure ev",
-    "electric(bov",
-    "electric",
-]

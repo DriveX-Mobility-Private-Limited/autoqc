@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "django>=4.2,<5.0",
     "djangorestframework>=3.14",
+    "django-cors-headers>=4.4",
     "celery>=5.3",
     "redis>=5.0",
     "django-redis>=5.4",
@@ -19,6 +20,8 @@ dependencies = [
     "pillow-avif-plugin>=1.4",
     "environs>=11.0",
     "gunicorn>=21.2",
+    "gevent>=24.0",
+    "google-genai>=1.0",
 ]
 
 [build-system]
