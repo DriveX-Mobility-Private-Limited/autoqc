@@ -95,6 +95,25 @@ like the same real inspection photo.
 Return only the edited image.
 """.strip()
 
+FINAL_ORIENTATION_PROMPT = """
+Analyze this edited vehicle inspection image.
+
+Return strict JSON only:
+{
+  "orientation_fix_needed": false,
+  "rotation_angle": 0,
+  "reason": "Image is upright for natural inspection viewing."
+}
+
+Rules:
+- orientation_fix_needed is true when the whole image is sideways, upside down,
+  or not upright for natural human inspection viewing.
+- rotation_angle must be 0, 90, 180, or 270 and represents the anti-clockwise
+  correction needed to make the image upright.
+- Do not judge camera perspective or side angle here. Only judge whether the
+  returned image needs a whole-image rotation before API response.
+""".strip()
+
 
 class CleanupImageAnalysis(BaseModel):
     has_primary_two_wheeler: bool = Field(default=False)
@@ -106,6 +125,12 @@ class CleanupImageAnalysis(BaseModel):
     current_view_label: str = Field(default="other")
     target_view_label: str = Field(default="other")
     should_edit: bool = Field(default=False)
+    reason: str = Field(default="")
+
+
+class FinalOrientationAnalysis(BaseModel):
+    orientation_fix_needed: bool = Field(default=False)
+    rotation_angle: int = Field(default=0)
     reason: str = Field(default="")
 
 
@@ -156,6 +181,10 @@ class NanoBananaClient(GeminiClient):
             edited_image = self._extract_image(response)
             if not edited_image:
                 return None
+            final_orientation_analysis = self._fix_edited_image_orientation(
+                edited_image,
+                analysis,
+            )
 
             token_usage = self._get_token_usage(response)
             logging.info(f"Nano Banana token usage: {token_usage}")
@@ -163,6 +192,7 @@ class NanoBananaClient(GeminiClient):
                 **edited_image,
                 "skipped": False,
                 "cleanup_analysis": analysis_data,
+                "final_orientation_analysis": final_orientation_analysis,
                 "model": self.model_name,
                 "token_usage": token_usage,
             }
@@ -280,6 +310,99 @@ class NanoBananaClient(GeminiClient):
             file_path=file_path,
             size_bytes=size_bytes,
             mime_type=image.mime_type,
+        )
+
+    def _fix_edited_image_orientation(
+        self,
+        edited_image: dict,
+        original_analysis: CleanupImageAnalysis,
+    ) -> dict | None:
+        if not original_analysis.orientation_fix_needed:
+            return None
+
+        image = self._data_url_to_downloaded_image(
+            edited_image["data_url"],
+            edited_image["mime_type"],
+        )
+        try:
+            final_analysis = self._analyze_final_orientation(image)
+            if not final_analysis:
+                return None
+
+            final_data = final_analysis.model_dump()
+            if (
+                not final_analysis.orientation_fix_needed
+                or final_analysis.rotation_angle == 0
+            ):
+                return final_data
+
+            if final_analysis.rotation_angle not in {90, 180, 270}:
+                logging.warning(
+                    "Skipping unsupported final cleanup rotation: "
+                    f"{final_analysis.rotation_angle}",
+                )
+                return final_data
+
+            rotated_image = self._rotate_image(image, final_analysis.rotation_angle)
+            try:
+                image_bytes = Path(rotated_image.file_path).read_bytes()
+                image_base64 = base64.b64encode(image_bytes).decode()
+                edited_image["data_url"] = (
+                    f"data:{rotated_image.mime_type};base64,{image_base64}"
+                )
+                edited_image["mime_type"] = rotated_image.mime_type
+                final_data["applied_rotation"] = final_analysis.rotation_angle
+                return final_data
+            finally:
+                self._delete_file(rotated_image.file_path)
+        finally:
+            self._delete_file(image.file_path)
+
+    def _analyze_final_orientation(
+        self,
+        image: DownloadedImage,
+    ) -> FinalOrientationAnalysis | None:
+        try:
+            response = self._client().models.generate_content(
+                model=self.analysis_model_name,
+                contents=[
+                    FINAL_ORIENTATION_PROMPT,
+                    types.Part.from_bytes(
+                        data=Path(image.file_path).read_bytes(),
+                        mime_type=image.mime_type,
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    response_mime_type="application/json",
+                ),
+            )
+            analysis = FinalOrientationAnalysis.model_validate_json(response.text)
+            logging.info(
+                "Final cleanup orientation analysis: "
+                f"{analysis.model_dump_json(exclude_none=True)}",
+            )
+            return analysis
+        except Exception:
+            logging.exception("Final cleanup orientation analysis failed")
+            return None
+
+    @staticmethod
+    def _data_url_to_downloaded_image(
+        data_url: str,
+        mime_type: str,
+    ) -> DownloadedImage:
+        _, image_base64 = data_url.split(",", 1)
+        suffix = ".png" if mime_type == "image/png" else ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            image_bytes = base64.b64decode(image_base64)
+            temp_file.write(image_bytes)
+            file_path = temp_file.name
+
+        return DownloadedImage(
+            file_path=file_path,
+            size_bytes=len(image_bytes),
+            mime_type=mime_type,
         )
 
     def _extract_image(self, response) -> dict | None:
