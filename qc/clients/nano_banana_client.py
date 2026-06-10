@@ -21,6 +21,9 @@ Return strict JSON only:
   "has_primary_two_wheeler": true,
   "cleanup_needed": true,
   "framing_fix_needed": false,
+  "angle_fix_needed": false,
+  "current_view_label": "right",
+  "target_view_label": "right",
   "should_edit": true,
   "reason": "Primary two-wheeler is present and background cleanup is needed."
 }
@@ -33,8 +36,13 @@ Rules:
 - framing_fix_needed is true when the primary two-wheeler is too close to an
   image edge, cropped, partially out of frame, or surrounded by an awkward crop
   that can be improved with natural background padding/reframing.
+- angle_fix_needed is true when the image is tilted, has strong perspective
+  skew, or is an oblique 100-140 degree capture that should be normalized toward
+  the requested target angle for inspection.
+- current_view_label and target_view_label must be one of front, rear, left,
+  right, odometer, or other. Use the requested target angle when provided.
 - should_edit is true only when has_primary_two_wheeler is true and either
-  cleanup_needed or framing_fix_needed is true.
+  cleanup_needed, framing_fix_needed, or angle_fix_needed is true.
 - If there is no primary two-wheeler, set should_edit false. Do not ask for any
   image edit.
 """.strip()
@@ -54,13 +62,21 @@ adding realistic surrounding background or gently reframing the image. Keep the
 same real-world inspection-photo look. Do not create a studio photo, do not
 beautify the vehicle, and do not make the result look AI-generated.
 
+If angle_fix_needed is true, improve the inspection angle by correcting tilt,
+perspective skew, and mild oblique capture. When a target angle is requested,
+make the image read as that inspection angle only if the visible vehicle side
+already supports it. For example, a 120-degree oblique right-side image may be
+normalized toward a cleaner right-side inspection view. Do not invent hidden
+vehicle surfaces, do not flip left/right, and do not transform a genuinely wrong
+view into a different side.
+
 Keep the primary two-wheeler exactly the same: shape, color, registration plate,
-odometer/details if visible, lighting direction, camera angle, perspective,
-shadows, and image resolution. Do not redraw, replace, rotate, upscale, or
-change the vehicle. If any part of the primary vehicle is outside the original
-image, do not invent missing vehicle details; add only natural background space.
-Fill removed areas naturally using the surrounding background so the result
-looks like the same real inspection photo.
+odometer/details if visible, lighting direction, camera height/context, shadows,
+and image resolution. Do not redraw, replace, flip, upscale, or change the
+vehicle. If any part of the primary vehicle is outside the original image, do
+not invent missing vehicle details; add only natural background space. Fill
+removed areas naturally using the surrounding background so the result looks
+like the same real inspection photo.
 
 Return only the edited image.
 """.strip()
@@ -70,6 +86,9 @@ class CleanupImageAnalysis(BaseModel):
     has_primary_two_wheeler: bool = Field(default=False)
     cleanup_needed: bool = Field(default=False)
     framing_fix_needed: bool = Field(default=False)
+    angle_fix_needed: bool = Field(default=False)
+    current_view_label: str = Field(default="other")
+    target_view_label: str = Field(default="other")
     should_edit: bool = Field(default=False)
     reason: str = Field(default="")
 
@@ -83,10 +102,14 @@ class NanoBananaClient(GeminiClient):
         super().__init__(model_name=model_name)
         self.analysis_model_name = analysis_model_name
 
-    def cleanup_image(self, image_url: str) -> dict | None:
+    def cleanup_image(
+        self,
+        image_url: str,
+        target_angle: str = "",
+    ) -> dict | None:
         image = self._download_image(image_url)
         try:
-            analysis = self._analyze_image(image)
+            analysis = self._analyze_image(image, target_angle=target_angle)
             if not analysis:
                 return None
 
@@ -131,12 +154,17 @@ class NanoBananaClient(GeminiClient):
         finally:
             self._delete_file(image.file_path)
 
-    def _analyze_image(self, image: DownloadedImage) -> CleanupImageAnalysis | None:
+    def _analyze_image(
+        self,
+        image: DownloadedImage,
+        target_angle: str = "",
+    ) -> CleanupImageAnalysis | None:
+        prompt = self._build_analysis_prompt(target_angle)
         try:
             response = self._client().models.generate_content(
                 model=self.analysis_model_name,
                 contents=[
-                    CLEANUP_ANALYSIS_PROMPT,
+                    prompt,
                     types.Part.from_bytes(
                         data=Path(image.file_path).read_bytes(),
                         mime_type=image.mime_type,
@@ -156,6 +184,18 @@ class NanoBananaClient(GeminiClient):
         except Exception:
             logging.exception("Image cleanup analysis failed")
             return None
+
+    @staticmethod
+    def _build_analysis_prompt(target_angle: str = "") -> str:
+        if not target_angle:
+            return CLEANUP_ANALYSIS_PROMPT
+
+        return (
+            f"{CLEANUP_ANALYSIS_PROMPT}\n\n"
+            f"Requested target angle: {target_angle.strip().lower()}\n"
+            "Use this as target_view_label when it is one of front, rear, left, "
+            "right, odometer, or other."
+        )
 
     @staticmethod
     def _build_cleanup_prompt(analysis: CleanupImageAnalysis) -> str:

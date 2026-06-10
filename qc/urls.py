@@ -1,5 +1,6 @@
 from django.urls import path
 
+from qc.views.vehicle_analysis import BoulevardQCRerunView
 from qc.views.vehicle_analysis import ImageCleanupView
 from qc.views.health import HealthCheckView
 from qc.views.vehicle_analysis import QCImageTestView
@@ -19,6 +20,11 @@ urlpatterns = [
         "boulevard/api/qc-test/",
         QCImageTestView.as_view(),
         name="boulevard-qc-test",
+    ),
+    path(
+        "boulevard/api/rerun-qc/",
+        BoulevardQCRerunView.as_view(),
+        name="boulevard-rerun-qc",
     ),
     path(
         "api/vehicle-analysis/",

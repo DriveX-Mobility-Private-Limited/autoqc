@@ -7,6 +7,7 @@ from autoqc.celery_app import app as celery_app
 from autoqc.responses import StandardResponse
 from qc.clients.nano_banana_client import NanoBananaClient
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
+from qc.serializers import BoulevardQCRerunSerializer
 from qc.serializers import ImageCleanupSerializer
 from qc.serializers import QCImageTestSerializer
 from qc.serializers import VehicleAnalysisRequestSerializer
@@ -15,6 +16,7 @@ from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
 )
 from qc.tasks.helpers import run_gemini
+from qc.tasks.listing_qc import process_listing_qc
 from qc.tasks.listing_qc import vehicle_analysis_qc
 from logger import get_logger
 
@@ -170,6 +172,42 @@ class QCImageTestView(APIView):
             )
 
 
+class BoulevardQCRerunView(APIView):
+    """Retrigger listing QC asynchronously for Boulevard."""
+
+    def post(self, request: Request) -> Response:
+        serializer = BoulevardQCRerunSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        c2c_inventory_id = serializer.validated_data["c2c_inventory_id"]
+        image_urls = serializer.validated_data["image_urls"]
+
+        try:
+            task = process_listing_qc.delay(
+                c2c_inventory_id=c2c_inventory_id,
+                image_urls=image_urls,
+            )
+
+            return StandardResponse(
+                {
+                    "task_id": task.id,
+                    "c2c_inventory_id": c2c_inventory_id,
+                    "image_count": len(image_urls),
+                    "status": "PROCESSING",
+                    "message": "Listing QC rerun started",
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except Exception as e:
+            logging.exception("Error rerunning Boulevard QC")
+            return StandardResponse(
+                {
+                    "error": "Failed to rerun QC",
+                    "details": str(e),
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
 class ImageCleanupView(APIView):
     """Remove humans/clutter from a vehicle inspection image."""
 
@@ -178,8 +216,12 @@ class ImageCleanupView(APIView):
             serializer = ImageCleanupSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             image_url = serializer.validated_data["image_url"]
+            target_angle = serializer.validated_data["target_angle"]
 
-            cleanup_result = NanoBananaClient().cleanup_image(image_url)
+            cleanup_result = NanoBananaClient().cleanup_image(
+                image_url=image_url,
+                target_angle=target_angle,
+            )
             if not cleanup_result:
                 return StandardResponse(
                     {
@@ -192,6 +234,7 @@ class ImageCleanupView(APIView):
             return StandardResponse(
                 {
                     "image_url": image_url,
+                    "target_angle": target_angle,
                     **cleanup_result,
                 },
                 status=status.HTTP_200_OK,
