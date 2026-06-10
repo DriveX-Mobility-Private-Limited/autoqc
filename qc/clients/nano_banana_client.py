@@ -21,6 +21,8 @@ Return strict JSON only:
   "has_primary_two_wheeler": true,
   "cleanup_needed": true,
   "framing_fix_needed": false,
+  "orientation_fix_needed": false,
+  "rotation_angle": 0,
   "angle_fix_needed": false,
   "current_view_label": "right",
   "target_view_label": "right",
@@ -36,13 +38,18 @@ Rules:
 - framing_fix_needed is true when the primary two-wheeler is too close to an
   image edge, cropped, partially out of frame, or surrounded by an awkward crop
   that can be improved with natural background padding/reframing.
+- orientation_fix_needed is true when the whole image is sideways, upside down,
+  or not upright for natural human inspection viewing. rotation_angle must be
+  0, 90, 180, or 270 and represents the anti-clockwise correction needed to make
+  the image upright.
 - angle_fix_needed is true when the image is tilted, has strong perspective
   skew, or is an oblique 100-140 degree capture that should be normalized toward
   the requested target angle for inspection.
 - current_view_label and target_view_label must be one of front, rear, left,
   right, odometer, or other. Use the requested target angle when provided.
 - should_edit is true only when has_primary_two_wheeler is true and either
-  cleanup_needed, framing_fix_needed, or angle_fix_needed is true.
+  cleanup_needed, framing_fix_needed, orientation_fix_needed, or
+  angle_fix_needed is true.
 - If there is no primary two-wheeler, set should_edit false. Do not ask for any
   image edit.
 """.strip()
@@ -61,6 +68,11 @@ If framing_fix_needed is true, put the primary two-wheeler cleanly in frame by
 adding realistic surrounding background or gently reframing the image. Keep the
 same real-world inspection-photo look. Do not create a studio photo, do not
 beautify the vehicle, and do not make the result look AI-generated.
+
+If orientation_fix_needed is true, rotate the entire photo by rotation_angle
+degrees anti-clockwise so the two-wheeler is upright for natural inspection
+viewing. Preserve the image content while rotating, then fill any empty corners
+or edges naturally from the surrounding floor/wall/background.
 
 If angle_fix_needed is true, improve the inspection angle by correcting tilt,
 perspective skew, and mild oblique capture. When a target angle is requested,
@@ -86,6 +98,8 @@ class CleanupImageAnalysis(BaseModel):
     has_primary_two_wheeler: bool = Field(default=False)
     cleanup_needed: bool = Field(default=False)
     framing_fix_needed: bool = Field(default=False)
+    orientation_fix_needed: bool = Field(default=False)
+    rotation_angle: int = Field(default=0)
     angle_fix_needed: bool = Field(default=False)
     current_view_label: str = Field(default="other")
     target_view_label: str = Field(default="other")
