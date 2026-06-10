@@ -1,8 +1,11 @@
 import base64
 import json
+import tempfile
 from pathlib import Path
 
 from google.genai import types
+from PIL import Image
+from PIL import ImageOps
 from pydantic import BaseModel, Field
 
 from logger import get_logger
@@ -69,10 +72,9 @@ adding realistic surrounding background or gently reframing the image. Keep the
 same real-world inspection-photo look. Do not create a studio photo, do not
 beautify the vehicle, and do not make the result look AI-generated.
 
-If orientation_fix_needed is true, rotate the entire photo by rotation_angle
-degrees anti-clockwise so the two-wheeler is upright for natural inspection
-viewing. Preserve the image content while rotating, then fill any empty corners
-or edges naturally from the surrounding floor/wall/background.
+If orientation_fix_needed is true, the provided input image has already been
+rotated upright before this edit request. Keep it upright and do not rotate it
+back sideways.
 
 If angle_fix_needed is true, improve the inspection angle by correcting tilt,
 perspective skew, and mild oblique capture. When a target angle is requested,
@@ -122,6 +124,7 @@ class NanoBananaClient(GeminiClient):
         target_angle: str = "",
     ) -> dict | None:
         image = self._download_image(image_url)
+        edit_image = image
         try:
             analysis = self._analyze_image(image, target_angle=target_angle)
             if not analysis:
@@ -136,13 +139,14 @@ class NanoBananaClient(GeminiClient):
                     "model": self.analysis_model_name,
                 }
 
+            edit_image = self._prepare_edit_image(image, analysis)
             response = self._client().models.generate_content(
                 model=self.model_name,
                 contents=[
                     self._build_cleanup_prompt(analysis),
                     types.Part.from_bytes(
-                        data=Path(image.file_path).read_bytes(),
-                        mime_type=image.mime_type,
+                        data=Path(edit_image.file_path).read_bytes(),
+                        mime_type=edit_image.mime_type,
                     ),
                 ],
                 config=types.GenerateContentConfig(
@@ -166,6 +170,8 @@ class NanoBananaClient(GeminiClient):
             logging.exception("Nano Banana image cleanup failed")
             return None
         finally:
+            if edit_image.file_path != image.file_path:
+                self._delete_file(edit_image.file_path)
             self._delete_file(image.file_path)
 
     def _analyze_image(
@@ -219,6 +225,62 @@ class NanoBananaClient(GeminiClient):
             sort_keys=True,
         )
         return CLEANUP_PROMPT_TEMPLATE.format(analysis_json=analysis_json)
+
+    def _prepare_edit_image(
+        self,
+        image: DownloadedImage,
+        analysis: CleanupImageAnalysis,
+    ) -> DownloadedImage:
+        if not analysis.orientation_fix_needed or analysis.rotation_angle == 0:
+            return image
+
+        if analysis.rotation_angle not in {90, 180, 270}:
+            logging.warning(
+                f"Skipping unsupported cleanup rotation: {analysis.rotation_angle}",
+            )
+            return image
+
+        try:
+            return self._rotate_image(image, analysis.rotation_angle)
+        except Exception:
+            logging.exception("Failed to rotate cleanup image before editing")
+            return image
+
+    @staticmethod
+    def _rotate_image(
+        image: DownloadedImage,
+        rotation_angle: int,
+    ) -> DownloadedImage:
+        source_path = Path(image.file_path)
+        suffix = source_path.suffix or ".jpg"
+        with Image.open(source_path) as source:
+            rotated = ImageOps.exif_transpose(source).rotate(
+                rotation_angle,
+                expand=True,
+            )
+            if image.mime_type == "image/jpeg" and rotated.mode not in {
+                "RGB",
+                "L",
+            }:
+                rotated = rotated.convert("RGB")
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=suffix,
+            ) as temp_file:
+                rotated.save(temp_file.name)
+                file_path = temp_file.name
+
+        size_bytes = Path(file_path).stat().st_size
+        logging.info(
+            "Rotated cleanup image before editing: "
+            f"angle={rotation_angle}, size={size_bytes}B",
+        )
+        return DownloadedImage(
+            file_path=file_path,
+            size_bytes=size_bytes,
+            mime_type=image.mime_type,
+        )
 
     def _extract_image(self, response) -> dict | None:
         parts = getattr(response, "parts", None) or []

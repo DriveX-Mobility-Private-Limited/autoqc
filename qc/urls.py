@@ -11,6 +11,7 @@ from qc.views.vehicle_analysis import VehicleAnalysisView
 urlpatterns = [
     path("health/", HealthCheckView.as_view(), name="health"),
     path("api/health/", HealthCheckView.as_view(), name="api-health"),
+    path("api/v1/health/", HealthCheckView.as_view(), name="api-v1-health"),
     path(
         "boulevard/api/image-cleanup/",
         ImageCleanupView.as_view(),
