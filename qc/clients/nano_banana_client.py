@@ -1,42 +1,108 @@
 import base64
+import json
 from pathlib import Path
 
 from google.genai import types
+from pydantic import BaseModel, Field
 
 from logger import get_logger
+from qc.clients.gemini_client import DownloadedImage
 from qc.clients.gemini_client import GeminiClient
+from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
 from qc.constants.constants import AUTO_QC_GEMINI_IMAGE_EDIT_MODEL_NAME
 
 logging = get_logger()
 
-CLEANUP_PROMPT = """
-Edit this vehicle inspection image.
+CLEANUP_ANALYSIS_PROMPT = """
+Analyze this image before vehicle inspection cleanup.
+
+Return strict JSON only:
+{
+  "has_primary_two_wheeler": true,
+  "cleanup_needed": true,
+  "framing_fix_needed": false,
+  "should_edit": true,
+  "reason": "Primary two-wheeler is present and background cleanup is needed."
+}
+
+Rules:
+- has_primary_two_wheeler is true only when the image contains a clear primary
+  scooter, motorcycle, or other two-wheeler intended for inspection.
+- cleanup_needed is true when people, body parts, bags, clutter, other vehicles,
+  or foreground/background distractions should be removed.
+- framing_fix_needed is true when the primary two-wheeler is too close to an
+  image edge, cropped, partially out of frame, or surrounded by an awkward crop
+  that can be improved with natural background padding/reframing.
+- should_edit is true only when has_primary_two_wheeler is true and either
+  cleanup_needed or framing_fix_needed is true.
+- If there is no primary two-wheeler, set should_edit false. Do not ask for any
+  image edit.
+""".strip()
+
+CLEANUP_PROMPT_TEMPLATE = """
+Edit this vehicle inspection image using the analysis below.
+
+Analysis JSON:
+{analysis_json}
 
 Remove all people, humans, body parts, bags, personal items, clutter, other
 vehicles, and any foreground/background distractions that are not part of the
 primary two-wheeler.
 
+If framing_fix_needed is true, put the primary two-wheeler cleanly in frame by
+adding realistic surrounding background or gently reframing the image. Keep the
+same real-world inspection-photo look. Do not create a studio photo, do not
+beautify the vehicle, and do not make the result look AI-generated.
+
 Keep the primary two-wheeler exactly the same: shape, color, registration plate,
-odometer/details if visible, lighting direction, camera angle, crop,
-perspective, shadows, and image resolution. Do not beautify, redraw, replace,
-rotate, upscale, or change the vehicle. Fill removed areas naturally using the
-surrounding background so the result looks like the same real inspection photo.
+odometer/details if visible, lighting direction, camera angle, perspective,
+shadows, and image resolution. Do not redraw, replace, rotate, upscale, or
+change the vehicle. If any part of the primary vehicle is outside the original
+image, do not invent missing vehicle details; add only natural background space.
+Fill removed areas naturally using the surrounding background so the result
+looks like the same real inspection photo.
 
 Return only the edited image.
 """.strip()
 
 
+class CleanupImageAnalysis(BaseModel):
+    has_primary_two_wheeler: bool = Field(default=False)
+    cleanup_needed: bool = Field(default=False)
+    framing_fix_needed: bool = Field(default=False)
+    should_edit: bool = Field(default=False)
+    reason: str = Field(default="")
+
+
 class NanoBananaClient(GeminiClient):
-    def __init__(self, model_name: str = AUTO_QC_GEMINI_IMAGE_EDIT_MODEL_NAME):
+    def __init__(
+        self,
+        model_name: str = AUTO_QC_GEMINI_IMAGE_EDIT_MODEL_NAME,
+        analysis_model_name: str = AUTO_QC_GEMINI_MODEL_NAME,
+    ):
         super().__init__(model_name=model_name)
+        self.analysis_model_name = analysis_model_name
 
     def cleanup_image(self, image_url: str) -> dict | None:
         image = self._download_image(image_url)
         try:
+            analysis = self._analyze_image(image)
+            if not analysis:
+                return None
+
+            analysis_data = analysis.model_dump()
+            if not analysis.has_primary_two_wheeler or not analysis.should_edit:
+                return {
+                    "skipped": True,
+                    "skip_reason": analysis.reason,
+                    "cleanup_analysis": analysis_data,
+                    "model": self.analysis_model_name,
+                }
+
             response = self._client().models.generate_content(
                 model=self.model_name,
                 contents=[
-                    CLEANUP_PROMPT,
+                    self._build_cleanup_prompt(analysis),
                     types.Part.from_bytes(
                         data=Path(image.file_path).read_bytes(),
                         mime_type=image.mime_type,
@@ -54,6 +120,8 @@ class NanoBananaClient(GeminiClient):
             logging.info(f"Nano Banana token usage: {token_usage}")
             return {
                 **edited_image,
+                "skipped": False,
+                "cleanup_analysis": analysis_data,
                 "model": self.model_name,
                 "token_usage": token_usage,
             }
@@ -62,6 +130,41 @@ class NanoBananaClient(GeminiClient):
             return None
         finally:
             self._delete_file(image.file_path)
+
+    def _analyze_image(self, image: DownloadedImage) -> CleanupImageAnalysis | None:
+        try:
+            response = self._client().models.generate_content(
+                model=self.analysis_model_name,
+                contents=[
+                    CLEANUP_ANALYSIS_PROMPT,
+                    types.Part.from_bytes(
+                        data=Path(image.file_path).read_bytes(),
+                        mime_type=image.mime_type,
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    response_mime_type="application/json",
+                ),
+            )
+            analysis = CleanupImageAnalysis.model_validate_json(response.text)
+            logging.info(
+                "Image cleanup analysis: "
+                f"{analysis.model_dump_json(exclude_none=True)}",
+            )
+            return analysis
+        except Exception:
+            logging.exception("Image cleanup analysis failed")
+            return None
+
+    @staticmethod
+    def _build_cleanup_prompt(analysis: CleanupImageAnalysis) -> str:
+        analysis_json = json.dumps(
+            analysis.model_dump(),
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+        return CLEANUP_PROMPT_TEMPLATE.format(analysis_json=analysis_json)
 
     def _extract_image(self, response) -> dict | None:
         parts = getattr(response, "parts", None) or []
