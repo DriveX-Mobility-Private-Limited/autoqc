@@ -28,14 +28,14 @@ urlpatterns = [
         name="boulevard-rerun-qc",
     ),
     path(
+        "boulevard/api/vehicle-analysis/task-result/",
+        VehicleAnalysisTaskResultView.as_view(),
+        name="boulevard-vehicle-analysis-task-result",
+    ),
+    path(
         "api/vehicle-analysis/",
         VehicleAnalysisView.as_view(),
         name="vehicle-analysis",
-    ),
-    path(
-        "api/vehicle-analysis/task-result/",
-        VehicleAnalysisTaskResultView.as_view(),
-        name="vehicle-analysis-task-result",
     ),
     path(
         "api/vehicle-analysis/results/<str:transaction_id>/",
