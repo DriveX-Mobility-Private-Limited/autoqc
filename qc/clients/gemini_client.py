@@ -51,6 +51,11 @@ class GeminiClient:
         image_urls: list[str],
     ) -> list[dict]:
         try:
+            logging.bind(
+                model=self.model_name,
+                image_count=len(image_urls),
+                prompt_length=len(prompt),
+            ).info("Gemini generation request started")
             response = self._client().models.generate_content(
                 model=self.model_name,
                 contents=self._build_contents(prompt, image_urls),
@@ -68,7 +73,14 @@ class GeminiClient:
             )
             token_usage = self._get_token_usage(response)
             logging.info(f"Gemini token usage: {token_usage}")
-            return self._parse_response(response.text, image_urls, token_usage)
+            results = self._parse_response(response.text, image_urls, token_usage)
+            logging.bind(
+                model=self.model_name,
+                image_count=len(image_urls),
+                result_count=len(results),
+                token_usage=token_usage,
+            ).info("Gemini generation request completed")
+            return results
         except Exception:
             logging.exception("Gemini API call failed")
             return []
@@ -82,6 +94,13 @@ class GeminiClient:
         for url in image_urls:
             image = self._download_image(url)
             try:
+                logging.bind(
+                    image_url=url,
+                    file_path=image.file_path,
+                    size_bytes=image.size_bytes,
+                    mime_type=image.mime_type,
+                    inline=image.size_bytes <= INLINE_IMAGE_SIZE_LIMIT_BYTES,
+                ).info("Gemini image downloaded")
                 if image.size_bytes <= INLINE_IMAGE_SIZE_LIMIT_BYTES:
                     contents.append(
                         types.Part.from_bytes(
@@ -99,6 +118,9 @@ class GeminiClient:
         mime_type = self._guess_mime_type(url)
         suffix = Path(url.split("?")[0]).suffix or ".jpg"
 
+        logging.bind(image_url=url, timeout=self.timeout).info(
+            "Downloading image",
+        )
         with requests.get(
             url,
             stream=True,
@@ -120,11 +142,18 @@ class GeminiClient:
                     size_bytes += len(chunk)
                     temp_file.write(chunk)
 
-        return DownloadedImage(
+        downloaded = DownloadedImage(
             file_path=temp_file.name,
             size_bytes=size_bytes,
             mime_type=mime_type,
         )
+        logging.bind(
+            image_url=url,
+            file_path=downloaded.file_path,
+            size_bytes=downloaded.size_bytes,
+            mime_type=downloaded.mime_type,
+        ).info("Image downloaded")
+        return downloaded
 
     def _parse_response(
         self,
@@ -152,6 +181,10 @@ class GeminiClient:
             if token_usage:
                 result_dict["token_usage"] = token_usage
             results.append(result_dict)
+        logging.bind(
+            parsed_result_count=len(results),
+            image_count=len(image_urls),
+        ).info("Gemini JSON response parsed")
         return results
 
     def _get_token_usage(self, response) -> dict:

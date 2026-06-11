@@ -38,6 +38,13 @@ class VehicleAnalysisView(APIView):
             transaction_id = validated_data["transaction_id"]
             angle = validated_data["angle"]
 
+            logging.bind(
+                vehicle_id=vehicle_id,
+                transaction_id=transaction_id,
+                angle=angle,
+                has_image_path=bool(image_path),
+                has_image_url=bool(image_url),
+            ).info("Vehicle analysis request accepted")
             task = vehicle_analysis_qc.delay(
                 vehicle_id=vehicle_id,
                 image_path=image_path,
@@ -57,6 +64,12 @@ class VehicleAnalysisView(APIView):
                 "message": "Vehicle analysis started",
             }
 
+            logging.bind(
+                task_id=task.id,
+                vehicle_id=vehicle_id,
+                transaction_id=transaction_id,
+                angle=angle,
+            ).info("Vehicle analysis task queued")
             return StandardResponse(response_data, status=status.HTTP_200_OK)
         except Exception as e:
             logging.exception("Error triggering vehicle analysis")
@@ -86,6 +99,10 @@ class VehicleAnalysisResultsView(APIView):
             angle_results = VehicleAnalysisRedisService().get_all_results(
                 transaction_id,
             )
+            logging.bind(
+                transaction_id=transaction_id,
+                result_count=len(angle_results),
+            ).info("Vehicle analysis results lookup completed")
             if not angle_results:
                 return StandardResponse(
                     {
@@ -126,6 +143,11 @@ class VehicleAnalysisTaskResultView(APIView):
         task_id = serializer.validated_data["task_id"]
 
         task_result = celery_app.AsyncResult(task_id)
+        logging.bind(
+            task_id=task_id,
+            state=task_result.state,
+            ready=task_result.ready(),
+        ).info("Vehicle analysis task result polled")
         response_data = {
             "task_id": task_id,
             "status": task_result.state,
@@ -147,10 +169,19 @@ class QCImageTestView(APIView):
             image_url = serializer.validated_data["image_url"]
             angle = serializer.validated_data["angle"]
 
+            logging.bind(
+                image_url=image_url,
+                angle=angle,
+            ).info("Boulevard QC test started")
             raw_ai_response = run_gemini(
                 image_urls=[image_url],
                 model_name=AUTO_QC_GEMINI_MODEL_NAME,
             )
+            logging.bind(
+                image_url=image_url,
+                angle=angle,
+                result_count=len(raw_ai_response),
+            ).info("Boulevard QC test completed")
             return Response(
                 {
                     "success": bool(raw_ai_response),
@@ -182,10 +213,19 @@ class BoulevardQCRerunView(APIView):
         image_urls = serializer.validated_data["image_urls"]
 
         try:
+            logging.bind(
+                c2c_inventory_id=c2c_inventory_id,
+                image_count=len(image_urls),
+            ).info("Boulevard QC rerun requested")
             task = process_listing_qc.delay(
                 c2c_inventory_id=c2c_inventory_id,
                 image_urls=image_urls,
             )
+            logging.bind(
+                task_id=task.id,
+                c2c_inventory_id=c2c_inventory_id,
+                image_count=len(image_urls),
+            ).info("Boulevard QC rerun task queued")
 
             return StandardResponse(
                 {
@@ -218,6 +258,10 @@ class ImageCleanupView(APIView):
             image_url = serializer.validated_data["image_url"]
             target_angle = serializer.validated_data["target_angle"]
 
+            logging.bind(
+                image_url=image_url,
+                target_angle=target_angle,
+            ).info("Boulevard image cleanup requested")
             cleanup_result = NanoBananaClient().cleanup_image(
                 image_url=image_url,
                 target_angle=target_angle,
@@ -231,6 +275,15 @@ class ImageCleanupView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
+            logging.bind(
+                image_url=image_url,
+                target_angle=target_angle,
+                skipped=cleanup_result.get("skipped"),
+                model=cleanup_result.get("model"),
+                has_final_orientation_analysis=bool(
+                    cleanup_result.get("final_orientation_analysis"),
+                ),
+            ).info("Boulevard image cleanup completed")
             return StandardResponse(
                 {
                     "image_url": image_url,

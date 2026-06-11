@@ -61,6 +61,10 @@ class S3Client:
         operation_type: str,
     ) -> str | None:
         if not self.client:
+            logging.bind(
+                file_key=file_key,
+                operation_type=operation_type,
+            ).error("S3 client unavailable for presigned URL generation")
             return None
 
         try:
@@ -69,13 +73,28 @@ class S3Client:
                 if operation_type == PresignedUrlOperationType.PUT.value
                 else "get_object"
             )
-            return self.client.generate_presigned_url(
+            logging.bind(
+                file_key=file_key,
+                operation=operation,
+                bucket_name=self.bucket_name,
+                expires_in=self.link_expiration_time,
+            ).info("Generating S3 presigned URL")
+            url = self.client.generate_presigned_url(
                 operation,
                 Params={"Bucket": self.bucket_name, "Key": file_key},
                 ExpiresIn=self.link_expiration_time,
             )
+            logging.bind(
+                file_key=file_key,
+                operation=operation,
+                generated=bool(url),
+            ).info("Generated S3 presigned URL")
+            return url
         except Exception as e:
-            logging.error(
-                f"Failed to generate S3 presigned URL for {file_key}: {e}",
+            logging.bind(
+                file_key=file_key,
+                operation_type=operation_type,
+            ).error(
+                f"Failed to generate S3 presigned URL: {e}",
             )
             return None
