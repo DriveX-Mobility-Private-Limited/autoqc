@@ -5,7 +5,6 @@ from rest_framework.views import APIView
 
 from autoqc.celery_app import app as celery_app
 from autoqc.responses import StandardResponse
-from qc.clients.nano_banana_client import NanoBananaClient
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
 from qc.serializers import BoulevardQCRerunSerializer
 from qc.serializers import ImageCleanupSerializer
@@ -16,6 +15,7 @@ from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
 )
 from qc.tasks.helpers import run_gemini
+from qc.tasks.listing_qc import image_cleanup
 from qc.tasks.listing_qc import process_listing_qc
 from qc.tasks.listing_qc import vehicle_analysis_qc
 from logger import get_logger
@@ -262,35 +262,25 @@ class ImageCleanupView(APIView):
                 image_url=image_url,
                 target_angle=target_angle,
             ).info("Boulevard image cleanup requested")
-            cleanup_result = NanoBananaClient().cleanup_image(
+            task = image_cleanup.delay(
                 image_url=image_url,
                 target_angle=target_angle,
             )
-            if not cleanup_result:
-                return StandardResponse(
-                    {
-                        "error": "Failed to clean up image",
-                        "image_url": image_url,
-                    },
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
 
             logging.bind(
+                task_id=task.id,
                 image_url=image_url,
                 target_angle=target_angle,
-                skipped=cleanup_result.get("skipped"),
-                model=cleanup_result.get("model"),
-                has_final_orientation_analysis=bool(
-                    cleanup_result.get("final_orientation_analysis"),
-                ),
-            ).info("Boulevard image cleanup completed")
+            ).info("Boulevard image cleanup task queued")
             return StandardResponse(
                 {
+                    "task_id": task.id,
                     "image_url": image_url,
                     "target_angle": target_angle,
-                    **cleanup_result,
+                    "status": "PROCESSING",
+                    "message": "Image cleanup started",
                 },
-                status=status.HTTP_200_OK,
+                status=status.HTTP_202_ACCEPTED,
             )
         except Exception as e:
             logging.exception("Error cleaning up image")
