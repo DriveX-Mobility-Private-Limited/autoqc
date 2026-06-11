@@ -148,15 +148,35 @@ class NanoBananaClient(GeminiClient):
         image_url: str,
         target_angle: str = "",
     ) -> dict | None:
+        logging.bind(
+            image_url=image_url,
+            target_angle=target_angle,
+            edit_model=self.model_name,
+            analysis_model=self.analysis_model_name,
+        ).info("Image cleanup pipeline started")
         image = self._download_image(image_url)
+        logging.bind(
+            image_url=image_url,
+            file_path=image.file_path,
+            size_bytes=image.size_bytes,
+            mime_type=image.mime_type,
+        ).info("Image cleanup source downloaded")
         edit_image = image
         try:
             analysis = self._analyze_image(image, target_angle=target_angle)
             if not analysis:
+                logging.bind(image_url=image_url).error(
+                    "Image cleanup stopped because analysis failed",
+                )
                 return None
 
             analysis_data = analysis.model_dump()
             if not analysis.has_primary_two_wheeler or not analysis.should_edit:
+                logging.bind(
+                    image_url=image_url,
+                    target_angle=target_angle,
+                    cleanup_analysis=analysis_data,
+                ).info("Image cleanup skipped after analysis")
                 return {
                     "skipped": True,
                     "skip_reason": analysis.reason,
@@ -165,6 +185,14 @@ class NanoBananaClient(GeminiClient):
                 }
 
             edit_image = self._prepare_edit_image(image, analysis)
+            logging.bind(
+                image_url=image_url,
+                target_angle=target_angle,
+                cleanup_analysis=analysis_data,
+                edit_file_path=edit_image.file_path,
+                edit_size_bytes=edit_image.size_bytes,
+                edit_mime_type=edit_image.mime_type,
+            ).info("Image cleanup edit request prepared")
             response = self._client().models.generate_content(
                 model=self.model_name,
                 contents=[
@@ -180,6 +208,11 @@ class NanoBananaClient(GeminiClient):
             )
             edited_image = self._extract_image(response)
             if not edited_image:
+                logging.bind(
+                    image_url=image_url,
+                    target_angle=target_angle,
+                    model=self.model_name,
+                ).error("Image cleanup edit response did not include an image")
                 return None
             final_orientation_analysis = self._fix_edited_image_orientation(
                 edited_image,
@@ -188,6 +221,13 @@ class NanoBananaClient(GeminiClient):
 
             token_usage = self._get_token_usage(response)
             logging.info(f"Nano Banana token usage: {token_usage}")
+            logging.bind(
+                image_url=image_url,
+                target_angle=target_angle,
+                model=self.model_name,
+                token_usage=token_usage,
+                final_orientation_analysis=final_orientation_analysis,
+            ).info("Image cleanup pipeline completed")
             return {
                 **edited_image,
                 "skipped": False,
@@ -201,7 +241,13 @@ class NanoBananaClient(GeminiClient):
             return None
         finally:
             if edit_image.file_path != image.file_path:
+                logging.bind(file_path=edit_image.file_path).info(
+                    "Deleting prepared cleanup image",
+                )
                 self._delete_file(edit_image.file_path)
+            logging.bind(file_path=image.file_path).info(
+                "Deleting source cleanup image",
+            )
             self._delete_file(image.file_path)
 
     def _analyze_image(
@@ -211,6 +257,13 @@ class NanoBananaClient(GeminiClient):
     ) -> CleanupImageAnalysis | None:
         prompt = self._build_analysis_prompt(target_angle)
         try:
+            logging.bind(
+                file_path=image.file_path,
+                size_bytes=image.size_bytes,
+                mime_type=image.mime_type,
+                target_angle=target_angle,
+                model=self.analysis_model_name,
+            ).info("Image cleanup analysis request started")
             response = self._client().models.generate_content(
                 model=self.analysis_model_name,
                 contents=[
@@ -226,10 +279,10 @@ class NanoBananaClient(GeminiClient):
                 ),
             )
             analysis = CleanupImageAnalysis.model_validate_json(response.text)
-            logging.info(
-                "Image cleanup analysis: "
-                f"{analysis.model_dump_json(exclude_none=True)}",
-            )
+            logging.bind(
+                cleanup_analysis=analysis.model_dump(),
+                model=self.analysis_model_name,
+            ).info("Image cleanup analysis completed")
             return analysis
         except Exception:
             logging.exception("Image cleanup analysis failed")
@@ -262,6 +315,10 @@ class NanoBananaClient(GeminiClient):
         analysis: CleanupImageAnalysis,
     ) -> DownloadedImage:
         if not analysis.orientation_fix_needed or analysis.rotation_angle == 0:
+            logging.bind(
+                orientation_fix_needed=analysis.orientation_fix_needed,
+                rotation_angle=analysis.rotation_angle,
+            ).info("Cleanup image pre-rotation not required")
             return image
 
         if analysis.rotation_angle not in {90, 180, 270}:
@@ -271,6 +328,10 @@ class NanoBananaClient(GeminiClient):
             return image
 
         try:
+            logging.bind(
+                file_path=image.file_path,
+                rotation_angle=analysis.rotation_angle,
+            ).info("Rotating cleanup image before edit")
             return self._rotate_image(image, analysis.rotation_angle)
         except Exception:
             logging.exception("Failed to rotate cleanup image before editing")
@@ -306,6 +367,13 @@ class NanoBananaClient(GeminiClient):
             "Rotated cleanup image before editing: "
             f"angle={rotation_angle}, size={size_bytes}B",
         )
+        logging.bind(
+            source_file_path=image.file_path,
+            rotated_file_path=file_path,
+            rotation_angle=rotation_angle,
+            size_bytes=size_bytes,
+            mime_type=image.mime_type,
+        ).info("Cleanup image pre-rotation completed")
         return DownloadedImage(
             file_path=file_path,
             size_bytes=size_bytes,
@@ -318,6 +386,9 @@ class NanoBananaClient(GeminiClient):
         original_analysis: CleanupImageAnalysis,
     ) -> dict | None:
         if not original_analysis.orientation_fix_needed:
+            logging.bind(
+                orientation_fix_needed=False,
+            ).info("Final cleanup orientation verification not required")
             return None
 
         image = self._data_url_to_downloaded_image(
@@ -327,6 +398,7 @@ class NanoBananaClient(GeminiClient):
         try:
             final_analysis = self._analyze_final_orientation(image)
             if not final_analysis:
+                logging.error("Final cleanup orientation verification failed")
                 return None
 
             final_data = final_analysis.model_dump()
@@ -334,6 +406,9 @@ class NanoBananaClient(GeminiClient):
                 not final_analysis.orientation_fix_needed
                 or final_analysis.rotation_angle == 0
             ):
+                logging.bind(
+                    final_orientation_analysis=final_data,
+                ).info("Final cleanup orientation already upright")
                 return final_data
 
             if final_analysis.rotation_angle not in {90, 180, 270}:
@@ -352,6 +427,9 @@ class NanoBananaClient(GeminiClient):
                 )
                 edited_image["mime_type"] = rotated_image.mime_type
                 final_data["applied_rotation"] = final_analysis.rotation_angle
+                logging.bind(
+                    final_orientation_analysis=final_data,
+                ).info("Final cleanup image rotation applied")
                 return final_data
             finally:
                 self._delete_file(rotated_image.file_path)
@@ -363,6 +441,12 @@ class NanoBananaClient(GeminiClient):
         image: DownloadedImage,
     ) -> FinalOrientationAnalysis | None:
         try:
+            logging.bind(
+                file_path=image.file_path,
+                size_bytes=image.size_bytes,
+                mime_type=image.mime_type,
+                model=self.analysis_model_name,
+            ).info("Final cleanup orientation analysis started")
             response = self._client().models.generate_content(
                 model=self.analysis_model_name,
                 contents=[
@@ -378,10 +462,10 @@ class NanoBananaClient(GeminiClient):
                 ),
             )
             analysis = FinalOrientationAnalysis.model_validate_json(response.text)
-            logging.info(
-                "Final cleanup orientation analysis: "
-                f"{analysis.model_dump_json(exclude_none=True)}",
-            )
+            logging.bind(
+                final_orientation_analysis=analysis.model_dump(),
+                model=self.analysis_model_name,
+            ).info("Final cleanup orientation analysis completed")
             return analysis
         except Exception:
             logging.exception("Final cleanup orientation analysis failed")
@@ -399,6 +483,11 @@ class NanoBananaClient(GeminiClient):
             temp_file.write(image_bytes)
             file_path = temp_file.name
 
+        logging.bind(
+            file_path=file_path,
+            size_bytes=len(image_bytes),
+            mime_type=mime_type,
+        ).info("Converted edited cleanup data URL to temporary image")
         return DownloadedImage(
             file_path=file_path,
             size_bytes=len(image_bytes),

@@ -45,24 +45,29 @@ class VehicleAnalysisRedisService:
             pipe.expire(redis_key, self.EXPIRY_SECONDS)
             pipe.execute()
 
-            logging.info(
-                "Saved vehicle analysis: tx=%s angle=%s size=%dB->%dB",
-                transaction_id,
-                angle,
-                len(raw),
-                len(compressed),
-            )
+            logging.bind(
+                transaction_id=transaction_id,
+                angle=angle,
+                redis_key=redis_key,
+                raw_size_bytes=len(raw),
+                compressed_size_bytes=len(compressed),
+                expiry_seconds=self.EXPIRY_SECONDS,
+            ).info("Saved vehicle analysis result to Redis")
         except Exception:
-            logging.exception(
-                "Failed saving vehicle analysis: tx=%s angle=%s",
-                transaction_id,
-                angle,
-            )
+            logging.bind(
+                transaction_id=transaction_id,
+                angle=angle,
+            ).exception("Failed saving vehicle analysis result to Redis")
 
     def get_all_results(self, transaction_id: str) -> dict[str, dict]:
         try:
             redis_key = self._get_key(transaction_id)
             data = self.redis.hgetall(redis_key)
+            logging.bind(
+                transaction_id=transaction_id,
+                redis_key=redis_key,
+                redis_field_count=len(data),
+            ).info("Fetched vehicle analysis results from Redis")
 
             if not data:
                 return {}
@@ -73,12 +78,15 @@ class VehicleAnalysisRedisService:
                 decompressed = self._decompressor.decompress(compressed)
                 results[angle] = json.loads(decompressed)
         except Exception:
-            logging.exception(
-                "Failed retrieving vehicle analysis: tx=%s",
-                transaction_id,
+            logging.bind(transaction_id=transaction_id).exception(
+                "Failed retrieving vehicle analysis results from Redis",
             )
             return {}
         else:
+            logging.bind(
+                transaction_id=transaction_id,
+                result_count=len(results),
+            ).info("Decoded vehicle analysis results from Redis")
             return results
 
     def _get_key(self, transaction_id: str) -> str:
