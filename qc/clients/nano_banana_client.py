@@ -25,6 +25,7 @@ register_heif_opener()
 
 MAX_CLEANUP_RETRIES = 1
 MIN_SAFE_EDIT_CONFIDENCE = 0.75
+MAX_CONTEXT_IMAGES = 4
 
 VIEW_REFERENCE_URLS = {
     "front": "https://ik.imagekit.io/drivex/ik_self_inspection/front_view.avif",
@@ -73,8 +74,13 @@ Rules:
 - confidence is your confidence that the primary two-wheeler and required
   cleanup/fixes are correctly understood.
 - can_safely_edit is false when the image is too ambiguous, the requested angle
-  would require inventing hidden vehicle sides/parts, the vehicle is too cropped
-  to preserve identity, or the primary subject may not be a two-wheeler.
+  would require inventing hidden vehicle sides/parts that are not visible in
+  either the primary image or any provided context images, the vehicle is too
+  cropped to preserve identity, or the primary subject may not be a two-wheeler.
+- When context images are provided, use them only to understand the same
+  vehicle's true visible parts, decals, color, and side details. Context images
+  can make an angle/framing edit safer only when they clearly show the needed
+  side/parts for the same vehicle.
 - should_edit is true only when has_primary_two_wheeler is true and either
   cleanup_needed, framing_fix_needed, orientation_fix_needed, or
   angle_fix_needed is true, and can_safely_edit is true.
@@ -102,6 +108,13 @@ inspection framing and viewpoint for that angle. Do not copy its vehicle, color,
 parts, background, lighting, decals, or license details. The output must remain
 the same real two-wheeler from the input image.
 
+When same-vehicle context images are provided, use them only to preserve true
+vehicle identity and visible details while fixing orientation/framing/angle.
+They may reveal a side, decal, color panel, wheel, light, or part that is hidden
+in the primary image. Do not copy their background, lighting, or unrelated
+objects. Do not invent any vehicle part that is not visible in the primary or
+context images.
+
 If framing_fix_needed is true, put the primary two-wheeler cleanly in frame by
 adding realistic surrounding background or gently reframing the image. Keep the
 same real-world inspection-photo look. Do not create a studio photo, do not
@@ -114,10 +127,11 @@ back sideways.
 If angle_fix_needed is true, improve the inspection angle by correcting tilt,
 perspective skew, and mild oblique capture. When a target angle is requested,
 make the image read as that inspection angle only if the visible vehicle side
-already supports it. For example, a 120-degree oblique right-side image may be
-normalized toward a cleaner right-side inspection view. Do not invent hidden
-vehicle surfaces, do not flip left/right, and do not transform a genuinely wrong
-view into a different side.
+already supports it, or if same-vehicle context images clearly show the needed
+side/parts. For example, a 120-degree oblique right-side image may be normalized
+toward a cleaner right-side inspection view. Do not invent hidden vehicle
+surfaces, do not flip left/right, and do not transform a genuinely wrong view
+into a different side unless context images clearly support the requested side.
 
 Keep the primary two-wheeler exactly the same: shape, color, registration plate,
 odometer/details if visible, lighting direction, camera height/context, shadows,
@@ -157,6 +171,7 @@ CLEANUP_VERIFICATION_PROMPT = """
 Verify whether the edited vehicle inspection image is safe to return.
 
 You will receive the original/prepared image first and the edited image second.
+Additional same-vehicle context images may follow.
 Return strict JSON only:
 {
   "accepted": true,
@@ -178,8 +193,8 @@ Rules:
 - Reject if hidden vehicle sides/parts were invented, left/right was flipped, or
   the output looks synthetic/beautified.
 - Reject if the image is still sideways/upside down.
-- Reject if the target view was forced even though the source view did not
-  support it.
+- Reject if the target view was forced even though neither the source image nor
+  the context images support it.
 - Accept minor natural background fills and cleanup of non-primary objects.
 - If unsure, set accepted false, confidence below 0.75, and retry_recommended
   false so the system does not return a hallucinated edit.
@@ -227,8 +242,10 @@ class CleanupVerification(BaseModel):
 class CleanupPipelineState(TypedDict, total=False):
     image_url: str
     target_angle: str
+    context_image_urls: list[str]
     source_image: DownloadedImage
     edit_image: DownloadedImage
+    context_images: list[DownloadedImage]
     reference_image: DownloadedImage
     analysis: CleanupImageAnalysis
     edited_image: dict[str, Any]
@@ -262,16 +279,24 @@ class NanoBananaClient(GeminiClient):
         self,
         image_url: str,
         target_angle: str = "",
+        context_image_urls: list[str] | None = None,
     ) -> dict | None:
+        context_image_urls = self._normalize_context_image_urls(
+            image_url,
+            context_image_urls or [],
+        )
         logging.bind(
             image_url=image_url,
             target_angle=target_angle,
+            context_image_count=len(context_image_urls),
             edit_model=self.model_name,
             analysis_model=self.analysis_model_name,
         ).info("Image cleanup pipeline started")
         state: CleanupPipelineState = {
             "image_url": image_url,
             "target_angle": target_angle,
+            "context_image_urls": context_image_urls,
+            "context_images": [],
             "retry_count": 0,
             "retry_requested": False,
             "retry_feedback": "",
@@ -290,6 +315,7 @@ class NanoBananaClient(GeminiClient):
     def _build_cleanup_graph(self):
         graph = StateGraph(CleanupPipelineState)
         graph.add_node("download", self._download_cleanup_image_node)
+        graph.add_node("download_context", self._download_context_images_node)
         graph.add_node("analyze", self._analyze_cleanup_image_node)
         graph.add_node("safety_gate", self._safety_gate_cleanup_image_node)
         graph.add_node("prepare", self._prepare_cleanup_image_node)
@@ -304,7 +330,8 @@ class NanoBananaClient(GeminiClient):
         graph.add_node("skip", self._skip_cleanup_image_node)
 
         graph.add_edge(START, "download")
-        graph.add_edge("download", "analyze")
+        graph.add_edge("download", "download_context")
+        graph.add_edge("download_context", "analyze")
         graph.add_conditional_edges(
             "safety_gate",
             self._route_after_safety_gate,
@@ -342,6 +369,31 @@ class NanoBananaClient(GeminiClient):
             "temp_files": state["temp_files"],
         }
 
+    def _download_context_images_node(
+        self,
+        state: CleanupPipelineState,
+    ) -> CleanupPipelineState:
+        context_images = []
+        for context_url in state.get("context_image_urls", [])[:MAX_CONTEXT_IMAGES]:
+            try:
+                image = self._download_image(context_url)
+                self._track_temp_file(state, image.file_path)
+                context_images.append(image)
+                logging.bind(
+                    image_url=state["image_url"],
+                    context_image_url=context_url,
+                    file_path=image.file_path,
+                    size_bytes=image.size_bytes,
+                    mime_type=image.mime_type,
+                ).info("Image cleanup context image downloaded")
+            except Exception:
+                logging.exception("Failed to download cleanup context image")
+
+        return {
+            "context_images": context_images,
+            "temp_files": state["temp_files"],
+        }
+
     def _analyze_cleanup_image_node(
         self,
         state: CleanupPipelineState,
@@ -350,6 +402,7 @@ class NanoBananaClient(GeminiClient):
         analysis = self._analyze_image(
             image,
             target_angle=state.get("target_angle", ""),
+            context_images=state.get("context_images", []),
         )
         if not analysis:
             logging.bind(image_url=state["image_url"]).error(
@@ -458,6 +511,7 @@ class NanoBananaClient(GeminiClient):
                 mime_type=edit_image.mime_type,
             ),
         ]
+        contents.extend(self._build_context_image_parts(state.get("context_images", [])))
         if reference_image:
             contents.extend(
                 [
@@ -475,6 +529,7 @@ class NanoBananaClient(GeminiClient):
             target_angle=state.get("target_angle", ""),
             retry_count=state.get("retry_count", 0),
             has_reference_image=bool(reference_image),
+            context_image_count=len(state.get("context_images", [])),
             model=self.model_name,
         ).info("Image cleanup edit request started")
         response = self._client().models.generate_content(
@@ -525,6 +580,7 @@ class NanoBananaClient(GeminiClient):
             original_image=state["edit_image"],
             edited_image=state["edited_image"],
             analysis=state["analysis"],
+            context_images=state.get("context_images", []),
         )
         if not verification:
             return {"error": "verification_failed"}
@@ -649,7 +705,9 @@ class NanoBananaClient(GeminiClient):
         original_image: DownloadedImage,
         edited_image: dict[str, Any],
         analysis: CleanupImageAnalysis,
+        context_images: list[DownloadedImage] | None = None,
     ) -> CleanupVerification | None:
+        context_images = context_images or []
         edited_download = self._data_url_to_downloaded_image(
             edited_image["data_url"],
             edited_image["mime_type"],
@@ -659,23 +717,26 @@ class NanoBananaClient(GeminiClient):
                 original_file_path=original_image.file_path,
                 edited_file_path=edited_download.file_path,
                 target_view_label=analysis.target_view_label,
+                context_image_count=len(context_images),
                 model=self.analysis_model_name,
             ).info("Image cleanup verification started")
+            contents = [
+                self._build_verification_prompt(analysis),
+                "Original/prepared vehicle inspection image:",
+                types.Part.from_bytes(
+                    data=Path(original_image.file_path).read_bytes(),
+                    mime_type=original_image.mime_type,
+                ),
+                "Edited vehicle inspection image:",
+                types.Part.from_bytes(
+                    data=Path(edited_download.file_path).read_bytes(),
+                    mime_type=edited_download.mime_type,
+                ),
+            ]
+            contents.extend(self._build_context_image_parts(context_images))
             response = self._client().models.generate_content(
                 model=self.analysis_model_name,
-                contents=[
-                    self._build_verification_prompt(analysis),
-                    "Original/prepared vehicle inspection image:",
-                    types.Part.from_bytes(
-                        data=Path(original_image.file_path).read_bytes(),
-                        mime_type=original_image.mime_type,
-                    ),
-                    "Edited vehicle inspection image:",
-                    types.Part.from_bytes(
-                        data=Path(edited_download.file_path).read_bytes(),
-                        mime_type=edited_download.mime_type,
-                    ),
-                ],
+                contents=contents,
                 config=types.GenerateContentConfig(
                     temperature=0,
                     response_mime_type="application/json",
@@ -747,11 +808,48 @@ class NanoBananaClient(GeminiClient):
             logging.bind(file_path=file_path).info("Deleting cleanup pipeline file")
             self._delete_file(file_path)
 
+    @staticmethod
+    def _normalize_context_image_urls(
+        image_url: str,
+        context_image_urls: list[str],
+    ) -> list[str]:
+        normalized = []
+        seen = {image_url.strip()}
+        for context_url in context_image_urls:
+            context_url = context_url.strip()
+            if not context_url or context_url in seen:
+                continue
+            if "odometer" in context_url.lower():
+                continue
+            seen.add(context_url)
+            normalized.append(context_url)
+            if len(normalized) >= MAX_CONTEXT_IMAGES:
+                break
+        return normalized
+
+    @staticmethod
+    def _build_context_image_parts(context_images: list[DownloadedImage]) -> list:
+        parts = []
+        for index, context_image in enumerate(context_images, start=1):
+            parts.extend(
+                [
+                    f"Same vehicle context image {index} for true visible "
+                    "vehicle parts only:",
+                    types.Part.from_bytes(
+                        data=Path(context_image.file_path).read_bytes(),
+                        mime_type=context_image.mime_type,
+                    ),
+                ],
+            )
+        return parts
+
     def _analyze_image(
         self,
         image: DownloadedImage,
         target_angle: str = "",
+        context_images: list[DownloadedImage] | None = None,
     ) -> CleanupImageAnalysis | None:
+        context_images = context_images or []
         prompt = self._build_analysis_prompt(target_angle)
         try:
             logging.bind(
@@ -759,17 +857,21 @@ class NanoBananaClient(GeminiClient):
                 size_bytes=image.size_bytes,
                 mime_type=image.mime_type,
                 target_angle=target_angle,
+                context_image_count=len(context_images),
                 model=self.analysis_model_name,
             ).info("Image cleanup analysis request started")
+            contents = [
+                prompt,
+                "Primary vehicle inspection image to clean:",
+                types.Part.from_bytes(
+                    data=Path(image.file_path).read_bytes(),
+                    mime_type=image.mime_type,
+                ),
+            ]
+            contents.extend(self._build_context_image_parts(context_images))
             response = self._client().models.generate_content(
                 model=self.analysis_model_name,
-                contents=[
-                    prompt,
-                    types.Part.from_bytes(
-                        data=Path(image.file_path).read_bytes(),
-                        mime_type=image.mime_type,
-                    ),
-                ],
+                contents=contents,
                 config=types.GenerateContentConfig(
                     temperature=0,
                     response_mime_type="application/json",

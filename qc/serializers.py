@@ -40,6 +40,12 @@ class BoulevardQCRerunSerializer(serializers.Serializer):
 
 class ImageCleanupSerializer(serializers.Serializer):
     image_url = serializers.URLField(required=True)
+    context_image_urls = serializers.ListField(
+        child=serializers.URLField(),
+        allow_empty=True,
+        required=False,
+        default=list,
+    )
     target_angle = serializers.CharField(
         required=False,
         allow_blank=True,

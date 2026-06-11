@@ -257,6 +257,7 @@ class ImageCleanupView(APIView):
             serializer = ImageCleanupSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             image_url = serializer.validated_data["image_url"]
+            context_image_urls = serializer.validated_data["context_image_urls"]
             target_angle = resolve_cleanup_target_angle(
                 image_url,
                 serializer.validated_data["target_angle"],
@@ -265,22 +266,26 @@ class ImageCleanupView(APIView):
             logging.bind(
                 image_url=image_url,
                 target_angle=target_angle,
+                context_image_count=len(context_image_urls),
             ).info("Boulevard image cleanup requested")
             task = image_cleanup.delay(
                 image_url=image_url,
                 target_angle=target_angle,
+                context_image_urls=context_image_urls,
             )
 
             logging.bind(
                 task_id=task.id,
                 image_url=image_url,
                 target_angle=target_angle,
+                context_image_count=len(context_image_urls),
             ).info("Boulevard image cleanup task queued")
             return StandardResponse(
                 {
                     "task_id": task.id,
                     "image_url": image_url,
                     "target_angle": target_angle,
+                    "context_image_count": len(context_image_urls),
                     "status": "PROCESSING",
                     "message": "Image cleanup started",
                 },

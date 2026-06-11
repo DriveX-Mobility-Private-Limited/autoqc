@@ -91,17 +91,21 @@ def image_cleanup(
     self,  # noqa: ANN001
     image_url: str,
     target_angle: str = "",
+    context_image_urls: list[str] | None = None,
 ) -> dict:
     resolved_target_angle = resolve_cleanup_target_angle(image_url, target_angle)
+    context_image_urls = context_image_urls or []
     logging.bind(
         task_id=self.request.id,
         image_url=image_url,
         target_angle=target_angle,
         resolved_target_angle=resolved_target_angle,
+        context_image_count=len(context_image_urls),
     ).info("Image cleanup task started")
     cleanup_result = NanoBananaClient().cleanup_image(
         image_url=image_url,
         target_angle=resolved_target_angle,
+        context_image_urls=context_image_urls,
     )
     if not cleanup_result:
         logging.bind(
@@ -109,6 +113,7 @@ def image_cleanup(
             image_url=image_url,
             target_angle=target_angle,
             resolved_target_angle=resolved_target_angle,
+            context_image_count=len(context_image_urls),
         ).error("Image cleanup task failed")
         return {
             "success": False,
@@ -125,6 +130,7 @@ def image_cleanup(
             image_url=image_url,
             target_angle=target_angle,
             resolved_target_angle=resolved_target_angle,
+            context_image_count=len(context_image_urls),
         ).error("Image cleanup upload failed")
         return {
             "success": False,
@@ -146,6 +152,7 @@ def image_cleanup(
         image_url=image_url,
         target_angle=target_angle,
         resolved_target_angle=resolved_target_angle,
+        context_image_count=len(context_image_urls),
         skipped=uploaded_cleanup_result.get("skipped"),
         model=uploaded_cleanup_result.get("model"),
         cleaned_image_path=uploaded_cleanup_result.get("cleaned_image_path"),
