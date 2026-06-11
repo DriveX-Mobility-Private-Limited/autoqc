@@ -14,19 +14,11 @@ logger.remove()
 logger.add(
     sys.stderr,
     format=LOG_FORMAT,
-    level="ERROR",
+    level="INFO",
     backtrace=True,
     diagnose=True,
-    serialize=True,
     enqueue=True,
     catch=True,
-)
-logger.add(
-    sys.stdout,
-    format=LOG_FORMAT,
-    level="INFO",
-    enqueue=True,
-    colorize=True,
 )
 
 
