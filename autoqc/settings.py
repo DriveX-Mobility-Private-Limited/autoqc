@@ -34,7 +34,7 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=True)
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS: tuple[str, ...] = (
     "GET",
@@ -51,6 +51,7 @@ CORS_ALLOW_HEADERS: list[str] = [
     "St-Auth-Mode",
     "Dnt",
     "Fdi-Version",
+    "x-api-key",
 ]
 
 ROOT_URLCONF = "autoqc.urls"

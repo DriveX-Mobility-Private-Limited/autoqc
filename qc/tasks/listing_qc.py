@@ -160,56 +160,6 @@ def image_cleanup(
     return result
 
 
-@shared_task(bind=True, name="autoqc.tasks.image_cleanup")
-def image_cleanup(
-    self,  # noqa: ANN001
-    image_url: str,
-    target_angle: str = "",
-) -> dict:
-    logging.bind(
-        task_id=self.request.id,
-        image_url=image_url,
-        target_angle=target_angle,
-    ).info("Image cleanup task started")
-    cleanup_result = NanoBananaClient().cleanup_image(
-        image_url=image_url,
-        target_angle=target_angle,
-    )
-    if not cleanup_result:
-        logging.bind(
-            task_id=self.request.id,
-            image_url=image_url,
-            target_angle=target_angle,
-        ).error("Image cleanup task failed")
-        return {
-            "success": False,
-            "error": "Failed to clean up image",
-            "task_id": self.request.id,
-            "image_url": image_url,
-            "target_angle": target_angle,
-        }
-
-    result = {
-        "success": True,
-        "task_id": self.request.id,
-        "image_url": image_url,
-        "target_angle": target_angle,
-        **cleanup_result,
-    }
-    logging.bind(
-        task_id=self.request.id,
-        image_url=image_url,
-        target_angle=target_angle,
-        skipped=cleanup_result.get("skipped"),
-        model=cleanup_result.get("model"),
-        has_final_orientation_analysis=bool(
-            cleanup_result.get("final_orientation_analysis"),
-        ),
-        has_cleanup_verification=bool(cleanup_result.get("cleanup_verification")),
-    ).info("Image cleanup task completed")
-    return result
-
-
 @shared_task(name="autoqc.tasks.process_listing_qc")
 def process_listing_qc(
     c2c_inventory_id: int,
