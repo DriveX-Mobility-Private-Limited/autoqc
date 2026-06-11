@@ -17,7 +17,7 @@ logger.add(
     level="INFO",
     backtrace=True,
     diagnose=True,
-    enqueue=True,
+    enqueue=False,
     catch=True,
 )
 
