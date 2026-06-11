@@ -23,6 +23,7 @@ app.conf.task_routes = {
     "autoqc.tasks.process_listing_qc": {"queue": "autoqc"},
     "autoqc.tasks.process_listing_qc_image": {"queue": "autoqc"},
     "autoqc.tasks.publish_listing_qc_result": {"queue": "autoqc"},
+    "autoqc.tasks.image_cleanup": {"queue": "autoqc"},
     "galaxy.tasks.process_autoqc_result": {"queue": "default"},
 }
 
