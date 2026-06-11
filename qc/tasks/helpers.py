@@ -82,7 +82,7 @@ def _get_langfuse() -> Langfuse:
 def _get_prompt() -> str:
     label = "latest" if settings.DEBUG else "production"
     try:
-        return (
+        prompt = (
             _get_langfuse()
             .get_prompt(
                 "license-plate-extraction-batch_v2",
@@ -90,8 +90,15 @@ def _get_prompt() -> str:
             )
             .prompt
         )
+        logging.bind(
+            label=label,
+            prompt_length=len(prompt),
+        ).info("Fetched Langfuse QC prompt")
+        return prompt
     except Exception as e:  # noqa: BLE001
-        logging.warning(f"Failed to fetch Langfuse prompt: {e}. Using default.")
+        logging.bind(label=label).warning(
+            f"Failed to fetch Langfuse prompt: {e}. Using default.",
+        )
         return DEFAULT_PROMPT
 
 
@@ -101,12 +108,23 @@ def _run_single_image(
     prompt: str,
     model_name: str,
 ) -> list[dict]:
+    logging.bind(
+        image_index=image_index,
+        image_url=image_url,
+        model_name=model_name,
+    ).info("Running Gemini for single image")
     results = GeminiClient(model_name=model_name).generate(
         prompt=prompt,
         image_urls=[image_url],
     )
     for result in results:
         result["image_index"] = image_index
+    logging.bind(
+        image_index=image_index,
+        image_url=image_url,
+        model_name=model_name,
+        result_count=len(results),
+    ).info("Completed Gemini for single image")
     return results
 
 
@@ -116,9 +134,17 @@ def run_gemini(
 ) -> list[dict]:
     """Run Gemini license-plate extraction one image/angle at a time."""
     if not image_urls:
+        logging.bind(model_name=model_name).warning(
+            "Gemini run requested with no images",
+        )
         return []
 
     prompt = _get_prompt()
+    logging.bind(
+        model_name=model_name,
+        image_count=len(image_urls),
+        prompt_length=len(prompt),
+    ).info("Gemini batch run started")
     all_results: list[dict] = []
     for index, image_url in enumerate(image_urls):
         try:
@@ -126,7 +152,16 @@ def run_gemini(
                 _run_single_image(image_url, index, prompt, model_name),
             )
         except Exception:
-            logging.exception(
-                f"Gemini invocation failed for image_index={index}",
+            logging.bind(
+                image_index=index,
+                image_url=image_url,
+                model_name=model_name,
+            ).exception(
+                "Gemini invocation failed",
             )
+    logging.bind(
+        model_name=model_name,
+        image_count=len(image_urls),
+        result_count=len(all_results),
+    ).info("Gemini batch run completed")
     return all_results

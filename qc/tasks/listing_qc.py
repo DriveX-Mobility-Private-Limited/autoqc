@@ -31,8 +31,15 @@ def process_listing_qc(
     logging.info(
         f"Processing listing QC for {c2c_inventory_id=}, image_count={len(image_urls)}",
     )
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        image_count=len(image_urls),
+    ).info("Listing QC task started")
 
     if not image_urls:
+        logging.bind(c2c_inventory_id=c2c_inventory_id).warning(
+            "Listing QC task received no images",
+        )
         publish_listing_qc_result.delay(c2c_inventory_id=c2c_inventory_id, results=[])
         return
 
@@ -43,6 +50,10 @@ def process_listing_qc(
         )
         for image_index, image_url in enumerate(image_urls)
     ]
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        image_count=len(header),
+    ).info("Listing QC image chord queued")
     chord(header)(
         publish_listing_qc_result.s(c2c_inventory_id=c2c_inventory_id),
     )
@@ -56,12 +67,21 @@ def process_listing_qc_image(
     logging.info(
         f"Processing listing QC image for image_index={image_index}",
     )
+    logging.bind(
+        image_index=image_index,
+        image_url=image_url,
+    ).info("Listing QC image processing started")
     results = run_gemini(
         image_urls=[image_url],
         model_name=AUTO_QC_GEMINI_MODEL_NAME,
     )
     for result in results:
         result["image_index"] = image_index
+    logging.bind(
+        image_index=image_index,
+        image_url=image_url,
+        result_count=len(results),
+    ).info("Listing QC image processing completed")
     return results
 
 
@@ -73,6 +93,11 @@ def publish_listing_qc_result(
     ai_response = [
         result for image_results in results for result in (image_results or [])
     ]
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        image_batch_count=len(results),
+        ai_response_count=len(ai_response),
+    ).info("Publishing listing QC result to Galaxy")
 
     celery_app.send_task(
         GALAXY_RESULT_TASK_NAME,
@@ -86,6 +111,12 @@ def publish_listing_qc_result(
     logging.info(
         f"Published autoqc result back to galaxy for {c2c_inventory_id=}",
     )
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        ai_response_count=len(ai_response),
+        target_task=GALAXY_RESULT_TASK_NAME,
+        target_queue=GALAXY_RESULT_QUEUE,
+    ).info("Published listing QC result to Galaxy")
 
 
 @shared_task(bind=True, name="autoqc.tasks.vehicle_analysis_qc")
@@ -100,10 +131,26 @@ def vehicle_analysis_qc(
     logging.info(
         f"Starting vehicle analysis for {vehicle_id=}, {transaction_id=}, {angle=}",
     )
+    logging.bind(
+        task_id=self.request.id,
+        vehicle_id=vehicle_id,
+        transaction_id=transaction_id,
+        angle=angle,
+        has_image_path=bool(image_path),
+        has_image_url=bool(image_url),
+    ).info("Vehicle analysis task started")
 
     redis_service = VehicleAnalysisRedisService()
     resolved_image_url = resolve_vehicle_image_url(image_path or image_url)
     if not resolved_image_url:
+        logging.bind(
+            task_id=self.request.id,
+            vehicle_id=vehicle_id,
+            transaction_id=transaction_id,
+            angle=angle,
+            image_path=image_path,
+            image_url=image_url,
+        ).error("Vehicle analysis image URL resolution failed")
         result = {
             "success": False,
             "error": "Failed to generate S3 presigned URL for image_path",
@@ -121,8 +168,22 @@ def vehicle_analysis_qc(
         image_urls=[resolved_image_url],
         model_name=AUTO_QC_GEMINI_MODEL_NAME,
     )
+    logging.bind(
+        task_id=self.request.id,
+        vehicle_id=vehicle_id,
+        transaction_id=transaction_id,
+        angle=angle,
+        resolved_image_url=resolved_image_url,
+        ai_response_count=len(ai_response),
+    ).info("Vehicle analysis Gemini response received")
 
     if not ai_response:
+        logging.bind(
+            task_id=self.request.id,
+            vehicle_id=vehicle_id,
+            transaction_id=transaction_id,
+            angle=angle,
+        ).error("Vehicle analysis AI response unavailable")
         result = {
             "success": False,
             "error": "AI response not available",
@@ -156,6 +217,13 @@ def vehicle_analysis_qc(
             "task_id": self.request.id,
         },
     )
+    logging.bind(
+        task_id=self.request.id,
+        vehicle_id=vehicle_id,
+        transaction_id=transaction_id,
+        angle=angle,
+        ai_response_count=len(ai_response),
+    ).info("Vehicle analysis task completed")
     return result
 
 
@@ -163,4 +231,10 @@ def resolve_vehicle_image_url(image_path: str) -> str | None:
     if not image_path:
         return None
 
-    return S3Client().generate_presigned_get_url(image_path)
+    logging.bind(image_path=image_path).info("Resolving vehicle image URL")
+    resolved_url = S3Client().generate_presigned_get_url(image_path)
+    logging.bind(
+        image_path=image_path,
+        resolved=bool(resolved_url),
+    ).info("Vehicle image URL resolved")
+    return resolved_url
