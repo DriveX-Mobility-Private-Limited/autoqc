@@ -1,7 +1,12 @@
+import base64
+from pathlib import PurePosixPath
+from urllib.parse import urlparse
+
 from celery import chord
 from celery import shared_task
 
 from autoqc.celery_app import app as celery_app
+from qc.clients.nano_banana_client import NanoBananaClient
 from qc.clients.s3_client import S3Client
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
 from qc.constants.constants import PROCX_S3_BUCKET_PATH
@@ -16,6 +21,150 @@ logging = get_logger()
 
 GALAXY_RESULT_TASK_NAME = "galaxy.tasks.process_autoqc_result"
 GALAXY_RESULT_QUEUE = "default"
+VALID_CLEANUP_TARGET_ANGLES = {"front", "rear", "left", "right", "odometer", "other"}
+
+
+def resolve_cleanup_target_angle(image_url: str, target_angle: str = "") -> str:
+    normalized = target_angle.strip().lower()
+    if normalized in VALID_CLEANUP_TARGET_ANGLES:
+        return normalized
+
+    normalized_url = image_url.lower()
+    for angle in ("front", "rear", "left", "right", "odometer"):
+        if (
+            f"_{angle}_" in normalized_url
+            or f"{angle}_view" in normalized_url
+            or f"/{angle}_" in normalized_url
+            or f"-{angle}-" in normalized_url
+        ):
+            return angle
+    return normalized
+
+
+def build_cleanup_image_key(image_url: str) -> str:
+    parsed_url = urlparse(image_url)
+    image_path = parsed_url.path if parsed_url.scheme else image_url
+    clean_path = image_path.split("?", 1)[0].strip("/")
+    path = PurePosixPath(clean_path)
+    suffix = path.suffix
+    if suffix:
+        cleanup_name = f"{path.stem}_cleanup{suffix}"
+    else:
+        cleanup_name = f"{path.name}_cleanup"
+    return str(path.with_name(cleanup_name))
+
+
+def build_cleanup_image_url(cleanup_key: str) -> str:
+    return S3Client().generate_presigned_get_url(cleanup_key) or cleanup_key
+
+
+def upload_cleanup_image(
+    image_url: str,
+    cleanup_result: dict,
+) -> dict | None:
+    data_url = cleanup_result.get("data_url")
+    mime_type = cleanup_result.get("mime_type") or "image/png"
+    if not data_url:
+        return cleanup_result
+
+    _, image_base64 = data_url.split(",", 1)
+    image_bytes = base64.b64decode(image_base64)
+    cleanup_key = build_cleanup_image_key(image_url)
+    uploaded = S3Client().upload_bytes(
+        file_key=cleanup_key,
+        data=image_bytes,
+        content_type=mime_type,
+    )
+    if not uploaded:
+        return None
+
+    cleanup_payload = {
+        key: value for key, value in cleanup_result.items() if key != "data_url"
+    }
+    cleanup_payload["cleaned_image_path"] = cleanup_key
+    cleanup_payload["cleaned_image_url"] = build_cleanup_image_url(cleanup_key)
+    return cleanup_payload
+
+
+@shared_task(bind=True, name="autoqc.tasks.image_cleanup")
+def image_cleanup(
+    self,  # noqa: ANN001
+    image_url: str,
+    target_angle: str = "",
+    context_image_urls: list[str] | None = None,
+) -> dict:
+    resolved_target_angle = resolve_cleanup_target_angle(image_url, target_angle)
+    context_image_urls = context_image_urls or []
+    logging.bind(
+        task_id=self.request.id,
+        image_url=image_url,
+        target_angle=target_angle,
+        resolved_target_angle=resolved_target_angle,
+        context_image_count=len(context_image_urls),
+    ).info("Image cleanup task started")
+    cleanup_result = NanoBananaClient().cleanup_image(
+        image_url=image_url,
+        target_angle=resolved_target_angle,
+        context_image_urls=context_image_urls,
+    )
+    if not cleanup_result:
+        logging.bind(
+            task_id=self.request.id,
+            image_url=image_url,
+            target_angle=target_angle,
+            resolved_target_angle=resolved_target_angle,
+            context_image_count=len(context_image_urls),
+        ).error("Image cleanup task failed")
+        return {
+            "success": False,
+            "error": "Failed to clean up image",
+            "task_id": self.request.id,
+            "image_url": image_url,
+            "target_angle": resolved_target_angle,
+        }
+
+    uploaded_cleanup_result = upload_cleanup_image(image_url, cleanup_result)
+    if not uploaded_cleanup_result:
+        logging.bind(
+            task_id=self.request.id,
+            image_url=image_url,
+            target_angle=target_angle,
+            resolved_target_angle=resolved_target_angle,
+            context_image_count=len(context_image_urls),
+        ).error("Image cleanup upload failed")
+        return {
+            "success": False,
+            "error": "Failed to upload cleaned image",
+            "task_id": self.request.id,
+            "image_url": image_url,
+            "target_angle": resolved_target_angle,
+        }
+
+    result = {
+        "success": True,
+        "task_id": self.request.id,
+        "image_url": image_url,
+        "target_angle": resolved_target_angle,
+        **uploaded_cleanup_result,
+    }
+    logging.bind(
+        task_id=self.request.id,
+        image_url=image_url,
+        target_angle=target_angle,
+        resolved_target_angle=resolved_target_angle,
+        context_image_count=len(context_image_urls),
+        skipped=uploaded_cleanup_result.get("skipped"),
+        model=uploaded_cleanup_result.get("model"),
+        cleaned_image_path=uploaded_cleanup_result.get("cleaned_image_path"),
+        has_cleaned_image_url=bool(uploaded_cleanup_result.get("cleaned_image_url")),
+        has_final_orientation_analysis=bool(
+            uploaded_cleanup_result.get("final_orientation_analysis"),
+        ),
+        has_cleanup_verification=bool(
+            uploaded_cleanup_result.get("cleanup_verification"),
+        ),
+    ).info("Image cleanup task completed")
+    return result
 
 
 @shared_task(name="autoqc.tasks.process_listing_qc")
@@ -31,8 +180,15 @@ def process_listing_qc(
     logging.info(
         f"Processing listing QC for {c2c_inventory_id=}, image_count={len(image_urls)}",
     )
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        image_count=len(image_urls),
+    ).info("Listing QC task started")
 
     if not image_urls:
+        logging.bind(c2c_inventory_id=c2c_inventory_id).warning(
+            "Listing QC task received no images",
+        )
         publish_listing_qc_result.delay(c2c_inventory_id=c2c_inventory_id, results=[])
         return
 
@@ -43,6 +199,10 @@ def process_listing_qc(
         )
         for image_index, image_url in enumerate(image_urls)
     ]
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        image_count=len(header),
+    ).info("Listing QC image chord queued")
     chord(header)(
         publish_listing_qc_result.s(c2c_inventory_id=c2c_inventory_id),
     )
@@ -56,12 +216,21 @@ def process_listing_qc_image(
     logging.info(
         f"Processing listing QC image for image_index={image_index}",
     )
+    logging.bind(
+        image_index=image_index,
+        image_url=image_url,
+    ).info("Listing QC image processing started")
     results = run_gemini(
         image_urls=[image_url],
         model_name=AUTO_QC_GEMINI_MODEL_NAME,
     )
     for result in results:
         result["image_index"] = image_index
+    logging.bind(
+        image_index=image_index,
+        image_url=image_url,
+        result_count=len(results),
+    ).info("Listing QC image processing completed")
     return results
 
 
@@ -73,6 +242,11 @@ def publish_listing_qc_result(
     ai_response = [
         result for image_results in results for result in (image_results or [])
     ]
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        image_batch_count=len(results),
+        ai_response_count=len(ai_response),
+    ).info("Publishing listing QC result to Galaxy")
 
     celery_app.send_task(
         GALAXY_RESULT_TASK_NAME,
@@ -86,6 +260,12 @@ def publish_listing_qc_result(
     logging.info(
         f"Published autoqc result back to galaxy for {c2c_inventory_id=}",
     )
+    logging.bind(
+        c2c_inventory_id=c2c_inventory_id,
+        ai_response_count=len(ai_response),
+        target_task=GALAXY_RESULT_TASK_NAME,
+        target_queue=GALAXY_RESULT_QUEUE,
+    ).info("Published listing QC result to Galaxy")
 
 
 @shared_task(bind=True, name="autoqc.tasks.vehicle_analysis_qc")
@@ -100,10 +280,26 @@ def vehicle_analysis_qc(
     logging.info(
         f"Starting vehicle analysis for {vehicle_id=}, {transaction_id=}, {angle=}",
     )
+    logging.bind(
+        task_id=self.request.id,
+        vehicle_id=vehicle_id,
+        transaction_id=transaction_id,
+        angle=angle,
+        has_image_path=bool(image_path),
+        has_image_url=bool(image_url),
+    ).info("Vehicle analysis task started")
 
     redis_service = VehicleAnalysisRedisService()
     resolved_image_url = resolve_vehicle_image_url(image_path or image_url)
     if not resolved_image_url:
+        logging.bind(
+            task_id=self.request.id,
+            vehicle_id=vehicle_id,
+            transaction_id=transaction_id,
+            angle=angle,
+            image_path=image_path,
+            image_url=image_url,
+        ).error("Vehicle analysis image URL resolution failed")
         result = {
             "success": False,
             "error": "Failed to generate S3 presigned URL for image_path",
@@ -121,8 +317,22 @@ def vehicle_analysis_qc(
         image_urls=[resolved_image_url],
         model_name=AUTO_QC_GEMINI_MODEL_NAME,
     )
+    logging.bind(
+        task_id=self.request.id,
+        vehicle_id=vehicle_id,
+        transaction_id=transaction_id,
+        angle=angle,
+        resolved_image_url=resolved_image_url,
+        ai_response_count=len(ai_response),
+    ).info("Vehicle analysis Gemini response received")
 
     if not ai_response:
+        logging.bind(
+            task_id=self.request.id,
+            vehicle_id=vehicle_id,
+            transaction_id=transaction_id,
+            angle=angle,
+        ).error("Vehicle analysis AI response unavailable")
         result = {
             "success": False,
             "error": "AI response not available",
@@ -156,6 +366,13 @@ def vehicle_analysis_qc(
             "task_id": self.request.id,
         },
     )
+    logging.bind(
+        task_id=self.request.id,
+        vehicle_id=vehicle_id,
+        transaction_id=transaction_id,
+        angle=angle,
+        ai_response_count=len(ai_response),
+    ).info("Vehicle analysis task completed")
     return result
 
 
@@ -163,4 +380,10 @@ def resolve_vehicle_image_url(image_path: str) -> str | None:
     if not image_path:
         return None
 
-    return S3Client().generate_presigned_get_url(image_path)
+    logging.bind(image_path=image_path).info("Resolving vehicle image URL")
+    resolved_url = S3Client().generate_presigned_get_url(image_path)
+    logging.bind(
+        image_path=image_path,
+        resolved=bool(resolved_url),
+    ).info("Vehicle image URL resolved")
+    return resolved_url

@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+VALID_ANGLE_LABELS = {"front", "rear", "left", "right", "odometer", "other"}
+
 
 class VehicleAnalysisRequestSerializer(serializers.Serializer):
     vehicle_id = serializers.IntegerField(required=True)
@@ -27,5 +29,34 @@ class QCImageTestSerializer(serializers.Serializer):
     angle = serializers.CharField(required=False, allow_blank=True, default="")
 
 
+class BoulevardQCRerunSerializer(serializers.Serializer):
+    c2c_inventory_id = serializers.IntegerField(required=True)
+    image_urls = serializers.ListField(
+        child=serializers.URLField(),
+        allow_empty=False,
+        required=True,
+    )
+
+
 class ImageCleanupSerializer(serializers.Serializer):
     image_url = serializers.URLField(required=True)
+    context_image_urls = serializers.ListField(
+        child=serializers.URLField(),
+        allow_empty=True,
+        required=False,
+        default=list,
+    )
+    target_angle = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+
+    def validate_target_angle(self, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized and normalized not in VALID_ANGLE_LABELS:
+            raise serializers.ValidationError(
+                "target_angle must be one of front, rear, left, right, "
+                "odometer, or other.",
+            )
+        return normalized

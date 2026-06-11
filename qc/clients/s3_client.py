@@ -55,12 +55,45 @@ class S3Client:
             operation_type=PresignedUrlOperationType.GET.value,
         )
 
+    def upload_bytes(
+        self,
+        file_key: str,
+        data: bytes,
+        content_type: str,
+    ) -> bool:
+        if not self.client:
+            logging.bind(file_key=file_key).error("S3 client unavailable for upload")
+            return False
+
+        try:
+            logging.bind(
+                file_key=file_key,
+                bucket_name=self.bucket_name,
+                content_type=content_type,
+                size_bytes=len(data),
+            ).info("Uploading bytes to S3")
+            self.client.put_object(
+                Bucket=self.bucket_name,
+                Key=file_key,
+                Body=data,
+                ContentType=content_type,
+            )
+            logging.bind(file_key=file_key, uploaded=True).info("Uploaded bytes to S3")
+            return True
+        except Exception as e:
+            logging.bind(file_key=file_key).error(f"Failed to upload bytes to S3: {e}")
+            return False
+
     def _generate_presigned_url(
         self,
         file_key: str,
         operation_type: str,
     ) -> str | None:
         if not self.client:
+            logging.bind(
+                file_key=file_key,
+                operation_type=operation_type,
+            ).error("S3 client unavailable for presigned URL generation")
             return None
 
         try:
@@ -69,13 +102,28 @@ class S3Client:
                 if operation_type == PresignedUrlOperationType.PUT.value
                 else "get_object"
             )
-            return self.client.generate_presigned_url(
+            logging.bind(
+                file_key=file_key,
+                operation=operation,
+                bucket_name=self.bucket_name,
+                expires_in=self.link_expiration_time,
+            ).info("Generating S3 presigned URL")
+            url = self.client.generate_presigned_url(
                 operation,
                 Params={"Bucket": self.bucket_name, "Key": file_key},
                 ExpiresIn=self.link_expiration_time,
             )
+            logging.bind(
+                file_key=file_key,
+                operation=operation,
+                generated=bool(url),
+            ).info("Generated S3 presigned URL")
+            return url
         except Exception as e:
-            logging.error(
-                f"Failed to generate S3 presigned URL for {file_key}: {e}",
+            logging.bind(
+                file_key=file_key,
+                operation_type=operation_type,
+            ).error(
+                f"Failed to generate S3 presigned URL: {e}",
             )
             return None

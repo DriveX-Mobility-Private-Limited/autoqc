@@ -5,8 +5,8 @@ from rest_framework.views import APIView
 
 from autoqc.celery_app import app as celery_app
 from autoqc.responses import StandardResponse
-from qc.clients.nano_banana_client import NanoBananaClient
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
+from qc.serializers import BoulevardQCRerunSerializer
 from qc.serializers import ImageCleanupSerializer
 from qc.serializers import QCImageTestSerializer
 from qc.serializers import VehicleAnalysisRequestSerializer
@@ -15,6 +15,9 @@ from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
 )
 from qc.tasks.helpers import run_gemini
+from qc.tasks.listing_qc import image_cleanup
+from qc.tasks.listing_qc import process_listing_qc
+from qc.tasks.listing_qc import resolve_cleanup_target_angle
 from qc.tasks.listing_qc import vehicle_analysis_qc
 from logger import get_logger
 
@@ -36,6 +39,13 @@ class VehicleAnalysisView(APIView):
             transaction_id = validated_data["transaction_id"]
             angle = validated_data["angle"]
 
+            logging.bind(
+                vehicle_id=vehicle_id,
+                transaction_id=transaction_id,
+                angle=angle,
+                has_image_path=bool(image_path),
+                has_image_url=bool(image_url),
+            ).info("Vehicle analysis request accepted")
             task = vehicle_analysis_qc.delay(
                 vehicle_id=vehicle_id,
                 image_path=image_path,
@@ -55,6 +65,12 @@ class VehicleAnalysisView(APIView):
                 "message": "Vehicle analysis started",
             }
 
+            logging.bind(
+                task_id=task.id,
+                vehicle_id=vehicle_id,
+                transaction_id=transaction_id,
+                angle=angle,
+            ).info("Vehicle analysis task queued")
             return StandardResponse(response_data, status=status.HTTP_200_OK)
         except Exception as e:
             logging.exception("Error triggering vehicle analysis")
@@ -84,6 +100,10 @@ class VehicleAnalysisResultsView(APIView):
             angle_results = VehicleAnalysisRedisService().get_all_results(
                 transaction_id,
             )
+            logging.bind(
+                transaction_id=transaction_id,
+                result_count=len(angle_results),
+            ).info("Vehicle analysis results lookup completed")
             if not angle_results:
                 return StandardResponse(
                     {
@@ -124,6 +144,11 @@ class VehicleAnalysisTaskResultView(APIView):
         task_id = serializer.validated_data["task_id"]
 
         task_result = celery_app.AsyncResult(task_id)
+        logging.bind(
+            task_id=task_id,
+            state=task_result.state,
+            ready=task_result.ready(),
+        ).info("Vehicle analysis task result polled")
         response_data = {
             "task_id": task_id,
             "status": task_result.state,
@@ -145,10 +170,19 @@ class QCImageTestView(APIView):
             image_url = serializer.validated_data["image_url"]
             angle = serializer.validated_data["angle"]
 
+            logging.bind(
+                image_url=image_url,
+                angle=angle,
+            ).info("Boulevard QC test started")
             raw_ai_response = run_gemini(
                 image_urls=[image_url],
                 model_name=AUTO_QC_GEMINI_MODEL_NAME,
             )
+            logging.bind(
+                image_url=image_url,
+                angle=angle,
+                result_count=len(raw_ai_response),
+            ).info("Boulevard QC test completed")
             return Response(
                 {
                     "success": bool(raw_ai_response),
@@ -170,6 +204,51 @@ class QCImageTestView(APIView):
             )
 
 
+class BoulevardQCRerunView(APIView):
+    """Retrigger listing QC asynchronously for Boulevard."""
+
+    def post(self, request: Request) -> Response:
+        serializer = BoulevardQCRerunSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        c2c_inventory_id = serializer.validated_data["c2c_inventory_id"]
+        image_urls = serializer.validated_data["image_urls"]
+
+        try:
+            logging.bind(
+                c2c_inventory_id=c2c_inventory_id,
+                image_count=len(image_urls),
+            ).info("Boulevard QC rerun requested")
+            task = process_listing_qc.delay(
+                c2c_inventory_id=c2c_inventory_id,
+                image_urls=image_urls,
+            )
+            logging.bind(
+                task_id=task.id,
+                c2c_inventory_id=c2c_inventory_id,
+                image_count=len(image_urls),
+            ).info("Boulevard QC rerun task queued")
+
+            return StandardResponse(
+                {
+                    "task_id": task.id,
+                    "c2c_inventory_id": c2c_inventory_id,
+                    "image_count": len(image_urls),
+                    "status": "PROCESSING",
+                    "message": "Listing QC rerun started",
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except Exception as e:
+            logging.exception("Error rerunning Boulevard QC")
+            return StandardResponse(
+                {
+                    "error": "Failed to rerun QC",
+                    "details": str(e),
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
 class ImageCleanupView(APIView):
     """Remove humans/clutter from a vehicle inspection image."""
 
@@ -178,23 +257,39 @@ class ImageCleanupView(APIView):
             serializer = ImageCleanupSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             image_url = serializer.validated_data["image_url"]
+            context_image_urls = serializer.validated_data["context_image_urls"]
+            target_angle = resolve_cleanup_target_angle(
+                image_url,
+                serializer.validated_data["target_angle"],
+            )
 
-            cleanup_result = NanoBananaClient().cleanup_image(image_url)
-            if not cleanup_result:
-                return StandardResponse(
-                    {
-                        "error": "Failed to clean up image",
-                        "image_url": image_url,
-                    },
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                )
+            logging.bind(
+                image_url=image_url,
+                target_angle=target_angle,
+                context_image_count=len(context_image_urls),
+            ).info("Boulevard image cleanup requested")
+            task = image_cleanup.delay(
+                image_url=image_url,
+                target_angle=target_angle,
+                context_image_urls=context_image_urls,
+            )
 
+            logging.bind(
+                task_id=task.id,
+                image_url=image_url,
+                target_angle=target_angle,
+                context_image_count=len(context_image_urls),
+            ).info("Boulevard image cleanup task queued")
             return StandardResponse(
                 {
+                    "task_id": task.id,
                     "image_url": image_url,
-                    **cleanup_result,
+                    "target_angle": target_angle,
+                    "context_image_count": len(context_image_urls),
+                    "status": "PROCESSING",
+                    "message": "Image cleanup started",
                 },
-                status=status.HTTP_200_OK,
+                status=status.HTTP_202_ACCEPTED,
             )
         except Exception as e:
             logging.exception("Error cleaning up image")
