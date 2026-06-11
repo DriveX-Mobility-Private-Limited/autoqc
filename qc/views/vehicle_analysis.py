@@ -17,6 +17,7 @@ from qc.services.vehicle_analysis_redis_service import (
 from qc.tasks.helpers import run_gemini
 from qc.tasks.listing_qc import image_cleanup
 from qc.tasks.listing_qc import process_listing_qc
+from qc.tasks.listing_qc import resolve_cleanup_target_angle
 from qc.tasks.listing_qc import vehicle_analysis_qc
 from logger import get_logger
 
@@ -256,7 +257,10 @@ class ImageCleanupView(APIView):
             serializer = ImageCleanupSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             image_url = serializer.validated_data["image_url"]
-            target_angle = serializer.validated_data["target_angle"]
+            target_angle = resolve_cleanup_target_angle(
+                image_url,
+                serializer.validated_data["target_angle"],
+            )
 
             logging.bind(
                 image_url=image_url,
