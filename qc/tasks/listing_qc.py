@@ -1,3 +1,7 @@
+import base64
+from pathlib import PurePosixPath
+from urllib.parse import urlparse
+
 from celery import chord
 from celery import shared_task
 
@@ -17,6 +21,143 @@ logging = get_logger()
 
 GALAXY_RESULT_TASK_NAME = "galaxy.tasks.process_autoqc_result"
 GALAXY_RESULT_QUEUE = "default"
+VALID_CLEANUP_TARGET_ANGLES = {"front", "rear", "left", "right", "odometer", "other"}
+
+
+def resolve_cleanup_target_angle(image_url: str, target_angle: str = "") -> str:
+    normalized = target_angle.strip().lower()
+    if normalized in VALID_CLEANUP_TARGET_ANGLES:
+        return normalized
+
+    normalized_url = image_url.lower()
+    for angle in ("front", "rear", "left", "right", "odometer"):
+        if (
+            f"_{angle}_" in normalized_url
+            or f"{angle}_view" in normalized_url
+            or f"/{angle}_" in normalized_url
+            or f"-{angle}-" in normalized_url
+        ):
+            return angle
+    return normalized
+
+
+def build_cleanup_image_key(image_url: str) -> str:
+    parsed_url = urlparse(image_url)
+    image_path = parsed_url.path if parsed_url.scheme else image_url
+    clean_path = image_path.split("?", 1)[0].strip("/")
+    path = PurePosixPath(clean_path)
+    suffix = path.suffix
+    if suffix:
+        cleanup_name = f"{path.stem}_cleanup{suffix}"
+    else:
+        cleanup_name = f"{path.name}_cleanup"
+    return str(path.with_name(cleanup_name))
+
+
+def build_cleanup_image_url(cleanup_key: str) -> str:
+    return S3Client().generate_presigned_get_url(cleanup_key) or cleanup_key
+
+
+def upload_cleanup_image(
+    image_url: str,
+    cleanup_result: dict,
+) -> dict | None:
+    data_url = cleanup_result.get("data_url")
+    mime_type = cleanup_result.get("mime_type") or "image/png"
+    if not data_url:
+        return cleanup_result
+
+    _, image_base64 = data_url.split(",", 1)
+    image_bytes = base64.b64decode(image_base64)
+    cleanup_key = build_cleanup_image_key(image_url)
+    uploaded = S3Client().upload_bytes(
+        file_key=cleanup_key,
+        data=image_bytes,
+        content_type=mime_type,
+    )
+    if not uploaded:
+        return None
+
+    cleanup_payload = {
+        key: value for key, value in cleanup_result.items() if key != "data_url"
+    }
+    cleanup_payload["cleaned_image_path"] = cleanup_key
+    cleanup_payload["cleaned_image_url"] = build_cleanup_image_url(cleanup_key)
+    return cleanup_payload
+
+
+@shared_task(bind=True, name="autoqc.tasks.image_cleanup")
+def image_cleanup(
+    self,  # noqa: ANN001
+    image_url: str,
+    target_angle: str = "",
+) -> dict:
+    resolved_target_angle = resolve_cleanup_target_angle(image_url, target_angle)
+    logging.bind(
+        task_id=self.request.id,
+        image_url=image_url,
+        target_angle=target_angle,
+        resolved_target_angle=resolved_target_angle,
+    ).info("Image cleanup task started")
+    cleanup_result = NanoBananaClient().cleanup_image(
+        image_url=image_url,
+        target_angle=resolved_target_angle,
+    )
+    if not cleanup_result:
+        logging.bind(
+            task_id=self.request.id,
+            image_url=image_url,
+            target_angle=target_angle,
+            resolved_target_angle=resolved_target_angle,
+        ).error("Image cleanup task failed")
+        return {
+            "success": False,
+            "error": "Failed to clean up image",
+            "task_id": self.request.id,
+            "image_url": image_url,
+            "target_angle": resolved_target_angle,
+        }
+
+    uploaded_cleanup_result = upload_cleanup_image(image_url, cleanup_result)
+    if not uploaded_cleanup_result:
+        logging.bind(
+            task_id=self.request.id,
+            image_url=image_url,
+            target_angle=target_angle,
+            resolved_target_angle=resolved_target_angle,
+        ).error("Image cleanup upload failed")
+        return {
+            "success": False,
+            "error": "Failed to upload cleaned image",
+            "task_id": self.request.id,
+            "image_url": image_url,
+            "target_angle": resolved_target_angle,
+        }
+
+    result = {
+        "success": True,
+        "task_id": self.request.id,
+        "image_url": image_url,
+        "target_angle": resolved_target_angle,
+        **uploaded_cleanup_result,
+    }
+    logging.bind(
+        task_id=self.request.id,
+        image_url=image_url,
+        target_angle=target_angle,
+        resolved_target_angle=resolved_target_angle,
+        skipped=uploaded_cleanup_result.get("skipped"),
+        model=uploaded_cleanup_result.get("model"),
+        cleaned_image_path=uploaded_cleanup_result.get("cleaned_image_path"),
+        has_cleaned_image_url=bool(uploaded_cleanup_result.get("cleaned_image_url")),
+        has_final_orientation_analysis=bool(
+            uploaded_cleanup_result.get("final_orientation_analysis"),
+        ),
+        has_cleanup_verification=bool(
+            uploaded_cleanup_result.get("cleanup_verification"),
+        ),
+    ).info("Image cleanup task completed")
+    return result
 
 
 @shared_task(bind=True, name="autoqc.tasks.image_cleanup")
