@@ -33,6 +33,11 @@ urlpatterns = [
         name="boulevard-vehicle-analysis-task-result",
     ),
     path(
+        "api/vehicle-analysis/task-result/",
+        VehicleAnalysisTaskResultView.as_view(),
+        name="vehicle-analysis-task-result",
+    ),
+    path(
         "api/vehicle-analysis/",
         VehicleAnalysisView.as_view(),
         name="vehicle-analysis",
