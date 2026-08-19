@@ -88,7 +88,56 @@ CELERY_TIMEZONE = "UTC"
 CELERY_ENABLE_UTC = True
 
 # Gemini
-GOOGLE_GEMINI_API_KEY = env.str("GOOGLE_GEMINI_API_KEY", default="")
+GOOGLE_AGENT_PLATFORM_ENABLED = env.bool(
+    "GOOGLE_AGENT_PLATFORM_ENABLED",
+    default=True,
+)
+GOOGLE_CLOUD_PROJECT = env.str("GOOGLE_CLOUD_PROJECT", default="")
+GOOGLE_CLOUD_LOCATION = env.str("GOOGLE_CLOUD_LOCATION", default="global")
+GOOGLE_SERVICE_ACCOUNT_TYPE = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_TYPE",
+    default="service_account",
+)
+GOOGLE_SERVICE_ACCOUNT_PROJECT_ID = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_PROJECT_ID",
+    default="",
+)
+GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY_ID = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY_ID",
+    default="",
+)
+GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY",
+    default="",
+)
+GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_CLIENT_EMAIL",
+    default="",
+)
+GOOGLE_SERVICE_ACCOUNT_CLIENT_ID = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_CLIENT_ID",
+    default="",
+)
+GOOGLE_SERVICE_ACCOUNT_AUTH_URI = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_AUTH_URI",
+    default="https://accounts.google.com/o/oauth2/auth",
+)
+GOOGLE_SERVICE_ACCOUNT_TOKEN_URI = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_TOKEN_URI",
+    default="https://oauth2.googleapis.com/token",
+)
+GOOGLE_SERVICE_ACCOUNT_AUTH_PROVIDER_X509_CERT_URL = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_AUTH_PROVIDER_X509_CERT_URL",
+    default="https://www.googleapis.com/oauth2/v1/certs",
+)
+GOOGLE_SERVICE_ACCOUNT_CLIENT_X509_CERT_URL = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_CLIENT_X509_CERT_URL",
+    default="",
+)
+GOOGLE_SERVICE_ACCOUNT_UNIVERSE_DOMAIN = env.str(
+    "GOOGLE_SERVICE_ACCOUNT_UNIVERSE_DOMAIN",
+    default="googleapis.com",
+)
 
 # Langfuse
 LANGFUSE_HOST = env.str("LANGFUSE_HOST", default="")
