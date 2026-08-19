@@ -13,6 +13,10 @@ AUTO_QC_GEMINI_MODEL_NAME = env(
     "AUTO_QC_GEMINI_MODEL_NAME",
     default="gemini-2.5-flash",
 )
+GOOGLE_AGENT_PLATFORM_MODEL = env(
+    "GOOGLE_AGENT_PLATFORM_MODEL",
+    default=AUTO_QC_GEMINI_MODEL_NAME,
+)
 AUTO_QC_GEMINI_IMAGE_EDIT_MODEL_NAME = env(
     "AUTO_QC_GEMINI_IMAGE_EDIT_MODEL_NAME",
     default="gemini-3.1-flash-image",
