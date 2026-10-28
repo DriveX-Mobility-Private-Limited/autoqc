@@ -1,17 +1,15 @@
 import os
-import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
 from django.conf import settings
 from google import genai
 from google.genai import types
 
-from qc.clients.gemini_models import BatchLicensePlateResponse
-from qc.constants.constants import GOOGLE_AGENT_PLATFORM_MODEL
 from logger import get_logger
+from qc.clients.gemini_models import BatchLicensePlateResponse
+from qc.clients.remote_image_downloader import DownloadedImage, RemoteImageDownloader
+from qc.constants.constants import GOOGLE_AGENT_PLATFORM_MODEL
 
 logging = get_logger()
 
@@ -26,13 +24,6 @@ MIME_TYPES = {
 }
 
 VALID_VIEW_LABELS = {"front", "rear", "left", "right", "odometer", "other"}
-
-
-@dataclass
-class DownloadedImage:
-    file_path: str
-    size_bytes: int
-    mime_type: str
 
 
 class GeminiClient:
@@ -245,36 +236,12 @@ class GeminiClient:
 
     def _download_image(self, url: str) -> DownloadedImage:
         mime_type = self._guess_mime_type(url)
-        suffix = Path(url.split("?")[0]).suffix or ".jpg"
-
         logging.bind(image_url=url, timeout=self.timeout).info(
             "Downloading image",
         )
-        with requests.get(
+        downloaded = RemoteImageDownloader().download(
             url,
-            stream=True,
-            timeout=self.timeout,
-            headers={"Accept": "image/*", "Accept-Encoding": "identity"},
-        ) as response:
-            response.raise_for_status()
-            header_content_type = response.headers.get("Content-Type")
-            if header_content_type:
-                header_mime_type = header_content_type.split(";")[0].strip()
-                if header_mime_type.startswith("image/"):
-                    mime_type = header_mime_type
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-                size_bytes = 0
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    size_bytes += len(chunk)
-                    temp_file.write(chunk)
-
-        downloaded = DownloadedImage(
-            file_path=temp_file.name,
-            size_bytes=size_bytes,
-            mime_type=mime_type,
+            default_mime_type=mime_type,
         )
         logging.bind(
             image_url=url,

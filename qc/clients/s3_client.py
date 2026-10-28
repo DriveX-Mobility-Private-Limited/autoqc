@@ -4,10 +4,12 @@ import boto3
 from botocore.client import Config
 
 from logger import get_logger
-from qc.constants.constants import PROCX_S3_ACCESS_KEY
-from qc.constants.constants import PROCX_S3_BUCKET_NAME
-from qc.constants.constants import PROCX_S3_BUCKET_REGION
-from qc.constants.constants import PROCX_S3_SECRET_ACCESS_KEY
+from qc.constants.constants import (
+    PROCX_S3_ACCESS_KEY,
+    PROCX_S3_BUCKET_NAME,
+    PROCX_S3_BUCKET_REGION,
+    PROCX_S3_SECRET_ACCESS_KEY,
+)
 from qc.constants.enums import PresignedUrlOperationType
 
 logging = get_logger()
@@ -60,6 +62,8 @@ class S3Client:
         file_key: str,
         data: bytes,
         content_type: str,
+        *,
+        overwrite: bool = True,
     ) -> bool:
         if not self.client:
             logging.bind(file_key=file_key).error("S3 client unavailable for upload")
@@ -72,11 +76,15 @@ class S3Client:
                 content_type=content_type,
                 size_bytes=len(data),
             ).info("Uploading bytes to S3")
+            put_options = {}
+            if not overwrite:
+                put_options["IfNoneMatch"] = "*"
             self.client.put_object(
                 Bucket=self.bucket_name,
                 Key=file_key,
                 Body=data,
                 ContentType=content_type,
+                **put_options,
             )
             logging.bind(file_key=file_key, uploaded=True).info("Uploaded bytes to S3")
             return True

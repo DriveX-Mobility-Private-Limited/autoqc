@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from qc.services.cleanup_target_service import resolve_owned_cleanup_source_key
+
 VALID_ANGLE_LABELS = {"front", "rear", "left", "right", "odometer", "other"}
 
 
@@ -51,6 +53,13 @@ class ImageCleanupSerializer(serializers.Serializer):
         allow_blank=True,
         default="",
     )
+
+    def validate_image_url(self, value: str) -> str:
+        try:
+            resolve_owned_cleanup_source_key(value)
+        except ValueError as error:
+            raise serializers.ValidationError(str(error)) from error
+        return value
 
     def validate_target_angle(self, value: str) -> str:
         normalized = value.strip().lower()

@@ -1,21 +1,18 @@
 import base64
-from pathlib import PurePosixPath
-from urllib.parse import urlparse
 
-from celery import chord
-from celery import shared_task
+from celery import chord, shared_task
 
 from autoqc.celery_app import app as celery_app
+from logger import get_logger
 from qc.clients.nano_banana_client import NanoBananaClient
 from qc.clients.s3_client import S3Client
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
-from qc.constants.constants import PROCX_S3_BUCKET_PATH
 from qc.constants.enums import C2CQCSource
+from qc.services.cleanup_target_service import build_cleanup_image_key
 from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
 )
 from qc.tasks.helpers import run_gemini
-from logger import get_logger
 
 logging = get_logger()
 
@@ -41,19 +38,6 @@ def resolve_cleanup_target_angle(image_url: str, target_angle: str = "") -> str:
     return normalized
 
 
-def build_cleanup_image_key(image_url: str) -> str:
-    parsed_url = urlparse(image_url)
-    image_path = parsed_url.path if parsed_url.scheme else image_url
-    clean_path = image_path.split("?", 1)[0].strip("/")
-    path = PurePosixPath(clean_path)
-    suffix = path.suffix
-    if suffix:
-        cleanup_name = f"{path.stem}_cleanup{suffix}"
-    else:
-        cleanup_name = f"{path.name}_cleanup"
-    return str(path.with_name(cleanup_name))
-
-
 def build_cleanup_image_url(cleanup_key: str) -> str:
     return S3Client().generate_presigned_get_url(cleanup_key) or cleanup_key
 
@@ -74,6 +58,7 @@ def upload_cleanup_image(
         file_key=cleanup_key,
         data=image_bytes,
         content_type=mime_type,
+        overwrite=False,
     )
     if not uploaded:
         return None
