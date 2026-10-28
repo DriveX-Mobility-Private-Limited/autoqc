@@ -76,6 +76,29 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "qc.authentication.ServiceAPIKeyAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+        "qc.authentication.ServiceScopePermission",
+    ],
+}
+
+GALAXY_INTERNAL_API_KEY = env.str("GALAXY_INTERNAL_API_KEY", default="")
+AUTOQC_BOULEVARD_API_KEY = env.str(
+    "AUTOQC_BOULEVARD_API_KEY",
+    default=env.str("AUTOQC_WEBHOOK_SECRET", default=""),
+)
+AUTOQC_SERVICE_API_KEYS = {
+    "galaxy": {
+        "key": GALAXY_INTERNAL_API_KEY,
+        "scopes": ("vehicle-analysis",),
+    },
+    "boulevard": {
+        "key": AUTOQC_BOULEVARD_API_KEY,
+        "scopes": ("boulevard",),
+    },
 }
 
 # Celery

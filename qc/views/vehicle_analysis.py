@@ -1,3 +1,4 @@
+from celery.utils import uuid as celery_uuid
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -5,27 +6,51 @@ from rest_framework.views import APIView
 
 from autoqc.celery_app import app as celery_app
 from autoqc.responses import StandardResponse
+from logger import get_logger
+from qc.authentication import service_id_for_request
 from qc.constants.constants import AUTO_QC_GEMINI_MODEL_NAME
-from qc.serializers import BoulevardQCRerunSerializer
-from qc.serializers import ImageCleanupSerializer
-from qc.serializers import QCImageTestSerializer
-from qc.serializers import VehicleAnalysisRequestSerializer
-from qc.serializers import VehicleAnalysisTaskResultSerializer
+from qc.serializers import (
+    BoulevardQCRerunSerializer,
+    ImageCleanupSerializer,
+    QCImageTestSerializer,
+    VehicleAnalysisRequestSerializer,
+    VehicleAnalysisTaskResultSerializer,
+)
+from qc.services.resource_ownership_service import (
+    ResourceOwnershipError,
+    ResourceOwnershipService,
+)
 from qc.services.vehicle_analysis_redis_service import (
     VehicleAnalysisRedisService,
 )
 from qc.tasks.helpers import run_gemini
-from qc.tasks.listing_qc import image_cleanup
-from qc.tasks.listing_qc import process_listing_qc
-from qc.tasks.listing_qc import resolve_cleanup_target_angle
-from qc.tasks.listing_qc import vehicle_analysis_qc
-from logger import get_logger
+from qc.tasks.listing_qc import (
+    image_cleanup,
+    process_listing_qc,
+    resolve_cleanup_target_angle,
+    vehicle_analysis_qc,
+)
 
 logging = get_logger()
 
 
+def _queue_owned_task(task, *, kwargs: dict, service_id: str):
+    task_id = celery_uuid()
+    ResourceOwnershipService().claim("task", task_id, service_id)
+    return task.apply_async(kwargs=kwargs, task_id=task_id)
+
+
+def _ownership_denied(error: ResourceOwnershipError) -> StandardResponse:
+    return StandardResponse(
+        {"error": "Resource access denied", "details": str(error)},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
 class VehicleAnalysisView(APIView):
     """API to trigger vehicle analysis for a single image/angle."""
+
+    required_service_scopes = "vehicle-analysis"
 
     def post(self, request: Request) -> Response:
         try:
@@ -38,6 +63,12 @@ class VehicleAnalysisView(APIView):
             image_url = validated_data.get("image_url") or ""
             transaction_id = validated_data["transaction_id"]
             angle = validated_data["angle"]
+            service_id = service_id_for_request(request)
+            ResourceOwnershipService().claim(
+                "transaction",
+                transaction_id,
+                service_id,
+            )
 
             logging.bind(
                 vehicle_id=vehicle_id,
@@ -46,12 +77,16 @@ class VehicleAnalysisView(APIView):
                 has_image_path=bool(image_path),
                 has_image_url=bool(image_url),
             ).info("Vehicle analysis request accepted")
-            task = vehicle_analysis_qc.delay(
-                vehicle_id=vehicle_id,
-                image_path=image_path,
-                image_url=image_url,
-                transaction_id=transaction_id,
-                angle=angle,
+            task = _queue_owned_task(
+                vehicle_analysis_qc,
+                service_id=service_id,
+                kwargs={
+                    "vehicle_id": vehicle_id,
+                    "image_path": image_path,
+                    "image_url": image_url,
+                    "transaction_id": transaction_id,
+                    "angle": angle,
+                },
             )
 
             response_data = {
@@ -72,6 +107,8 @@ class VehicleAnalysisView(APIView):
                 angle=angle,
             ).info("Vehicle analysis task queued")
             return StandardResponse(response_data, status=status.HTTP_200_OK)
+        except ResourceOwnershipError as e:
+            return _ownership_denied(e)
         except Exception as e:
             logging.exception("Error triggering vehicle analysis")
             return StandardResponse(
@@ -86,6 +123,8 @@ class VehicleAnalysisView(APIView):
 class VehicleAnalysisResultsView(APIView):
     """API to retrieve vehicle analysis results by transaction_id."""
 
+    required_service_scopes = "vehicle-analysis"
+
     def get(self, request: Request, transaction_id: str) -> Response:
         try:
             if not transaction_id:
@@ -97,8 +136,13 @@ class VehicleAnalysisResultsView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            angle_results = VehicleAnalysisRedisService().get_all_results(
+            ResourceOwnershipService().assert_owner(
+                "transaction",
                 transaction_id,
+                service_id_for_request(request),
+            )
+            angle_results = VehicleAnalysisRedisService().get_all_results(
+                transaction_id
             )
             logging.bind(
                 transaction_id=transaction_id,
@@ -124,6 +168,8 @@ class VehicleAnalysisResultsView(APIView):
                 },
                 status=status.HTTP_200_OK,
             )
+        except ResourceOwnershipError as e:
+            return _ownership_denied(e)
         except Exception as e:
             logging.exception("Error retrieving vehicle analysis results")
             return StandardResponse(
@@ -138,10 +184,20 @@ class VehicleAnalysisResultsView(APIView):
 class VehicleAnalysisTaskResultView(APIView):
     """Poll Celery task state/result for a vehicle analysis task."""
 
+    required_service_scopes = ("vehicle-analysis", "boulevard")
+
     def post(self, request: Request) -> Response:
         serializer = VehicleAnalysisTaskResultSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         task_id = serializer.validated_data["task_id"]
+        try:
+            ResourceOwnershipService().assert_owner(
+                "task",
+                task_id,
+                service_id_for_request(request),
+            )
+        except ResourceOwnershipError as e:
+            return _ownership_denied(e)
 
         task_result = celery_app.AsyncResult(task_id)
         logging.bind(
@@ -162,6 +218,8 @@ class VehicleAnalysisTaskResultView(APIView):
 
 class QCImageTestView(APIView):
     """Run QC synchronously for one arbitrary image URL."""
+
+    required_service_scopes = "boulevard"
 
     def post(self, request: Request) -> Response:
         try:
@@ -207,20 +265,32 @@ class QCImageTestView(APIView):
 class BoulevardQCRerunView(APIView):
     """Retrigger listing QC asynchronously for Boulevard."""
 
+    required_service_scopes = "boulevard"
+
     def post(self, request: Request) -> Response:
         serializer = BoulevardQCRerunSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         c2c_inventory_id = serializer.validated_data["c2c_inventory_id"]
         image_urls = serializer.validated_data["image_urls"]
+        service_id = service_id_for_request(request)
 
         try:
+            ResourceOwnershipService().claim(
+                "inventory",
+                str(c2c_inventory_id),
+                service_id,
+            )
             logging.bind(
                 c2c_inventory_id=c2c_inventory_id,
                 image_count=len(image_urls),
             ).info("Boulevard QC rerun requested")
-            task = process_listing_qc.delay(
-                c2c_inventory_id=c2c_inventory_id,
-                image_urls=image_urls,
+            task = _queue_owned_task(
+                process_listing_qc,
+                service_id=service_id,
+                kwargs={
+                    "c2c_inventory_id": c2c_inventory_id,
+                    "image_urls": image_urls,
+                },
             )
             logging.bind(
                 task_id=task.id,
@@ -238,6 +308,8 @@ class BoulevardQCRerunView(APIView):
                 },
                 status=status.HTTP_202_ACCEPTED,
             )
+        except ResourceOwnershipError as e:
+            return _ownership_denied(e)
         except Exception as e:
             logging.exception("Error rerunning Boulevard QC")
             return StandardResponse(
@@ -252,10 +324,12 @@ class BoulevardQCRerunView(APIView):
 class ImageCleanupView(APIView):
     """Remove humans/clutter from a vehicle inspection image."""
 
+    required_service_scopes = "boulevard"
+
     def post(self, request: Request) -> Response:
+        serializer = ImageCleanupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         try:
-            serializer = ImageCleanupSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
             image_url = serializer.validated_data["image_url"]
             context_image_urls = serializer.validated_data["context_image_urls"]
             target_angle = resolve_cleanup_target_angle(
@@ -268,10 +342,14 @@ class ImageCleanupView(APIView):
                 target_angle=target_angle,
                 context_image_count=len(context_image_urls),
             ).info("Boulevard image cleanup requested")
-            task = image_cleanup.delay(
-                image_url=image_url,
-                target_angle=target_angle,
-                context_image_urls=context_image_urls,
+            task = _queue_owned_task(
+                image_cleanup,
+                service_id=service_id_for_request(request),
+                kwargs={
+                    "image_url": image_url,
+                    "target_angle": target_angle,
+                    "context_image_urls": context_image_urls,
+                },
             )
 
             logging.bind(
